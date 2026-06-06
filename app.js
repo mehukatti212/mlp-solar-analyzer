@@ -596,7 +596,7 @@ function renderReport(r) {
               }
             }
             const vastikeStr = vastike !== null
-              ? `<td class="${vastike >= 0 ? 'positive-cell' : 'negative-cell'} vastike-cell">${(-vastike).toLocaleString('fi-FI', {minimumFractionDigits:2, maximumFractionDigits:2, signDisplay:'always'})}</td>`
+              ? `<td class="${vastike <= 0 ? 'positive-cell' : 'negative-cell'} vastike-cell">${(-vastike).toLocaleString('fi-FI', {minimumFractionDigits:2, maximumFractionDigits:2, signDisplay:'always'})}</td>`
               : '';
             return `<tr${isBreak ? ' class="breakeven"' : ''}>
               <td>${row.year}</td>
