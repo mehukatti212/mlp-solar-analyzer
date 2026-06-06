@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="fi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MLP & Solar | Kaukolämpö → Maalämpö Analyysityökalu</title>
+  <meta name="description" content="Kattava taloudellinen analyysi siirtymisestä kaukolämmöstä maalämpöön. Laske säästöt, takaisinmaksuaika ja vaikutus hoitovastikkeeseen." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="aurora-bg">
+    <div class="aurora-layer aurora-1"></div>
+    <div class="aurora-layer aurora-2"></div>
+    <div class="aurora-layer aurora-3"></div>
+  </div>
+
+  <header class="site-header">
+    <div class="header-inner">
+      <div class="logo-area">
+        <div class="logo-icon">
+          <svg viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <circle cx="18" cy="18" r="17" stroke="url(#logoGrad)" stroke-width="2"/>
+            <path d="M18 8 C18 8 10 14 10 20 C10 24.4 13.6 28 18 28 C22.4 28 26 24.4 26 20 C26 14 18 8 18 8Z" fill="url(#logoGrad2)" opacity="0.9"/>
+            <path d="M18 14 L18 26" stroke="white" stroke-width="1.5" stroke-linecap="round"/>
+            <path d="M14 20 L18 16 L22 20" stroke="white" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <defs>
+              <linearGradient id="logoGrad" x1="0" y1="0" x2="36" y2="36">
+                <stop offset="0%" stop-color="#38BDF8"/>
+                <stop offset="100%" stop-color="#818CF8"/>
+              </linearGradient>
+              <linearGradient id="logoGrad2" x1="18" y1="8" x2="18" y2="28" gradientUnits="userSpaceOnUse">
+                <stop offset="0%" stop-color="#38BDF8"/>
+                <stop offset="100%" stop-color="#6366F1"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </div>
+        <div class="logo-text">
+          <span class="logo-main">MLP &amp; Solar</span>
+          <span class="logo-sub">Energia-analyysi</span>
+        </div>
+      </div>
+      <div class="header-badges">
+        <span class="badge badge-cop">COP 3.2</span>
+        <span class="badge badge-fi">🇫🇮 Suomi</span>
+      </div>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <!-- Hero splash shown before conversation starts -->
+    <section class="hero-section" id="heroSection">
+      <div class="hero-content">
+        <div id="savedSessionsContainer"></div>
+        <div class="hero-eyebrow">
+          <span class="eyebrow-dot"></span>
+          Tekoälyavusteinen konsultointi
+        </div>
+        <h1 class="hero-title">
+          Kaukolämmöstä<br/>
+          <span class="gradient-text">Maalämpöön</span>
+        </h1>
+        <p class="hero-desc">
+          Selvitä tarkalleen, paljonko taloyhtiösi säästää siirtymällä maalämpöön —
+          ja milloin investointi on maksanut itsensä takaisin.
+        </p>
+        <div class="hero-stats">
+          <div class="stat-card">
+            <div class="stat-num">~68%</div>
+            <div class="stat-lbl">Energiankulutus vähenee</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">5–12v</div>
+            <div class="stat-lbl">Tyypillinen takaisinmaksuaika</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-num">CO₂</div>
+            <div class="stat-lbl">Merkittävät päästövähennykset</div>
+          </div>
+        </div>
+        <button class="btn-start" id="btnStart">
+          <span>Aloita analyysi</span>
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none">
+            <path d="M4 10H16M10 4L16 10L10 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+      <div class="hero-visual">
+        <div class="visual-card vc-main">
+          <div class="vc-label">Nykyinen lämmitys</div>
+          <div class="vc-value heat">Kaukolämpö</div>
+          <div class="vc-arrow">↓</div>
+          <div class="vc-label">Uusi lämmitys</div>
+          <div class="vc-value geo">Maalämpö + Aurinko</div>
+        </div>
+        <div class="visual-card vc-small vc-s1">
+          <div class="vc-icon">⚡</div>
+          <div class="vc-mini-label">COP-kerroin</div>
+          <div class="vc-mini-val">3.2×</div>
+        </div>
+        <div class="visual-card vc-small vc-s2">
+          <div class="vc-icon">☀️</div>
+          <div class="vc-mini-label">Aurinkosähkö</div>
+          <div class="vc-mini-val">Sisältyy</div>
+        </div>
+        <div class="visual-card vc-small vc-s3">
+          <div class="vc-icon">📉</div>
+          <div class="vc-mini-label">Hoitovastike</div>
+          <div class="vc-mini-val">Laskee</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Chat interface -->
+    <section class="chat-section hidden" id="chatSection">
+      <div class="chat-layout">
+        <!-- Progress sidebar -->
+        <aside class="progress-sidebar">
+          <div class="progress-title">Analyysivaiheet</div>
+          <div class="progress-steps" id="progressSteps">
+            <div class="progress-step active" data-step="1">
+              <div class="step-dot"></div>
+              <div class="step-info">
+                <div class="step-name">Nykytilanne</div>
+                <div class="step-desc">Kaukolämpötiedot</div>
+              </div>
+            </div>
+            <div class="progress-step" data-step="2">
+              <div class="step-dot"></div>
+              <div class="step-info">
+                <div class="step-name">Sähkö &amp; Aurinko</div>
+                <div class="step-desc">Energiahinnat</div>
+              </div>
+            </div>
+            <div class="progress-step" data-step="3">
+              <div class="step-dot"></div>
+              <div class="step-info">
+                <div class="step-name">Investointi</div>
+                <div class="step-desc">Laina &amp; rahoitus</div>
+              </div>
+            </div>
+            <div class="progress-step" data-step="4">
+              <div class="step-dot"></div>
+              <div class="step-info">
+                <div class="step-name">Analyysi</div>
+                <div class="step-desc">Tulokset &amp; raportti</div>
+              </div>
+            </div>
+          </div>
+          <div class="sidebar-data-preview" id="sidebarData">
+            <div class="sdp-title">Kerätyt tiedot</div>
+            <div id="dataItems" class="data-items"></div>
+          </div>
+        </aside>
+
+        <!-- Main chat area -->
+        <div class="chat-main">
+          <div class="chat-messages" id="chatMessages"></div>
+          <div class="chat-input-area" id="chatInputArea">
+            <div class="input-wrapper" id="inputWrapper">
+              <!-- Dynamic inputs injected here -->
+            </div>
+            <button class="btn-send" id="btnSend" disabled>
+              <span>Lähetä</span>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path d="M2 8H14M8 2L14 8L8 14" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Report section -->
+    <section class="report-section hidden" id="reportSection">
+      <div class="report-header">
+        <div class="report-badge">📊 Taloudellinen analyysi valmis</div>
+        <h2 class="report-title">Energiasiirtymäraportti</h2>
+        <p class="report-subtitle" id="reportSubtitle">Kaukolämmöstä maalämpöön</p>
+      </div>
+      <div class="report-layout">
+        <div class="report-main" id="reportContent"></div>
+        <div class="report-sidebar" id="reportSidebar"></div>
+      </div>
+      <div class="report-actions">
+          <button class="btn-save-as" id="btnSaveAs">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M12.5 3.5L12.5 3.5L3.5 12.5L3.5 12.5ZM12.5 3.5L14 5L5 14H3.5V12.5L12.5 3.5Z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Tallenna nimellä...
+          </button>
+          <button class="btn-restart" id="btnRestart">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <path d="M2 8C2 4.69 4.69 2 8 2C10.13 2 12 3.07 13.07 4.71" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <path d="M14 8C14 11.31 11.31 14 8 14C5.87 14 4 12.93 2.93 11.29" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+              <path d="M11 2L13.5 4.5L11 7" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M5 9L2.5 11.5L5 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            Uusi analyysi
+          </button>
+          <button class="btn-print" onclick="window.print()">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="5" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M5 5V3C5 2.45 5.45 2 6 2H10C10.55 2 11 2.45 11 3V5" stroke="currentColor" stroke-width="1.8"/>
+              <path d="M5 11H11" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+              <path d="M5 13H9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+            </svg>
+            Tulosta raportti
+          </button>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="saveModal" class="modal hidden">
+    <div class="modal-content">
+      <h3 class="modal-title">Tallenna analyysi nimellä</h3>
+      <input type="text" id="saveNameInput" class="modal-input" placeholder="esim. As Oy Esimerkki" autocomplete="off" />
+      <div class="modal-actions">
+        <button id="btnCancelSave" class="btn-cancel">Peruuta</button>
+        <button id="btnConfirmSave" class="btn-confirm">Tallenna</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
