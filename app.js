@@ -6,6 +6,28 @@ const data = {};
 let currentStage = 0;
 let currentSaveId = null;
 
+// ── Service Cost Model ─────────────────────────────────────────────────
+// All one-time costs reflect expected FUTURE prices at time of replacement,
+// accounting for technology maturation and increased market competition.
+// Annual costs are in today's euros (conservative, not inflation-adjusted).
+const SVC = {
+  mlpAnnual:          300,   // €/yr — maalämpö annual service (filter, sensors, refrigerant check)
+  klAnnual:           500,   // €/yr — kaukolämpö annual service (heat exchanger, pumps, controls)
+  pumpUnitCost:     20000,   // € per pump unit at replacement ~year 22 (future price, -25% vs today)
+  pumpReplYear:        22,   // year pump units are replaced (mid-lifecycle)
+  pumpUnitsPerMwh:    200,   // MWh annual heat demand per pump unit
+  inverterCost:      1800,   // € per solar inverter at replacement ~year 12 (future price)
+  inverterYears:  [12, 25, 38], // inverter replacement years (12-13yr lifespan)
+  panelReplCost:    20000,   // € solar panel system replacement at year 30
+  panelReplYear:       30,
+  solarInspCost:      600,   // € per solar inspection (every 4 years)
+  solarInspInterval:    4,
+  klHeatExchCost:   17500,   // € per KL heat exchanger unit replacement
+  klHeatExchYears: [22, 42], // KL needs TWO heat exchanger replacements over 50 years (20-25yr lifespan)
+  copImprovement:     0.5,   // COP gain modeled at pump replacement (conservative: ~0.1 COP/decade historically)
+  copImprovementYear:  22,   // year new pump with improved COP is installed
+};
+
 // ── DOM refs ───────────────────────────────────────────────────────────
 const heroSection   = document.getElementById('heroSection');
 const chatSection   = document.getElementById('chatSection');
@@ -54,12 +76,13 @@ const stages = [
   },
   {
     step: 2.5,
-    botMsg: `Loistava valinta! ☀️ Suomen aurinkoisuus vaihtelee sijainnin mukaan. Anna tiedot niin lasken arvioidun vuosituotannon:`,
+    botMsg: `Loistava valinta! ☀️ Suomen aurinkoisuus vaihtelee sijainnin mukaan. Anna tiedot niin lasken arvioidun vuosituotannon.\n\n<strong>Tärkeää 50-vuoden elinkaarta varten:</strong> Aurinkoinvertteri vaihdetaan noin 12–13 vuoden välein — yksi invertteri per rakennus. Jotta elinkaarikulut voidaan laskea tarkasti, tarvitsen myös tiedon rakennusten lukumäärästä.`,
     inputs: [
-      { key:'solarAddress', label:'Kiinteistön osoite', placeholder:'esim. Mannerheimintie 1, Helsinki', unit:'' },
-      { key:'solarKwp',     label:'Aurinkopaneelijärjestelmän koko (kWp)', placeholder:'esim. 30', unit:'kWp' },
+      { key:'solarAddress',  label:'Kiinteistön osoite', placeholder:'esim. Mannerheimintie 1, Helsinki', unit:'' },
+      { key:'solarKwp',      label:'Aurinkopaneelijärjestelmän koko (kWp)', placeholder:'esim. 30', unit:'kWp' },
+      { key:'buildingCount', label:'Rakennusten / inverttereiden lukumäärä taloyhtiössä', placeholder:'esim. 3', unit:'kpl' },
     ],
-    sidebarLabels: { solarAddress:'Osoite', solarKwp:'Aurinko (kWp)' }
+    sidebarLabels: { solarAddress:'Osoite', solarKwp:'Aurinko (kWp)', buildingCount:'Rakennuksia' }
   },
   {
     step: 3,
@@ -138,11 +161,9 @@ function buildInputs(stage) {
   });
   inputWrapper.appendChild(group);
 
-  // Handle extraInputs — may include radio-type and dynamic inputs
   const extraInputs = stage.extraInputs || [];
   extraInputs.forEach(inp => {
     if (inp.type === 'radio') {
-      // Render inline radio toggle for vastikeMode
       const rg = document.createElement('div');
       rg.className = 'vastike-mode-group';
       rg.innerHTML = `<div class="input-label" style="margin-bottom:6px">${inp.label}</div>`;
@@ -154,13 +175,11 @@ function buildInputs(stage) {
         btn.className = 'radio-btn';
         btn.textContent = opt.label;
         btn.dataset.val = opt.val;
-        // Pre-select if already stored
         if (data.vastikeMode === opt.val) btn.classList.add('selected');
         btn.onclick = () => {
           row.querySelectorAll('.radio-btn').forEach(b => b.classList.remove('selected'));
           btn.classList.add('selected');
           data.vastikeMode = opt.val;
-          // Update dynamic fields below
           updateVastikeFields(stage);
           checkSendEnabled(stage);
         };
@@ -169,7 +188,6 @@ function buildInputs(stage) {
       rg.appendChild(row);
       inputWrapper.appendChild(rg);
     } else {
-      // Normal text input (hoitovastike / totalBase) — rendered in a container that can update
       const wrap = document.createElement('div');
       wrap.className = 'input-field-wrap vastike-dynamic-field';
       wrap.dataset.key = inp.key;
@@ -203,13 +221,11 @@ function buildInputs(stage) {
     inputWrapper.appendChild(rg);
   }
 
-  // Enable send when required fields filled
   inputWrapper.querySelectorAll('.chat-input').forEach(input => {
     input.addEventListener('input', () => checkSendEnabled(stage));
   });
 }
 
-// Update the dynamic vastike input labels/placeholders when mode changes
 function updateVastikeFields(stage) {
   const mode = data.vastikeMode || 'm2';
   const extraInputs = stage.extraInputs || [];
@@ -234,7 +250,6 @@ function checkSendEnabled(stage) {
     const el = document.getElementById('inp_' + inp.key);
     return el && el.value.trim() !== '';
   });
-  // Check vastikeMode radio if stage has it
   const hasVastikeRadio = (stage.extraInputs || []).some(i => i.type === 'radio' && i.key === 'vastikeMode');
   const vastikeModeOk = !hasVastikeRadio || (data.vastikeMode === 'm2' || data.vastikeMode === 'osake');
   const radioOk = !stage.radioKey || inputWrapper.querySelector('.radio-btn.selected');
@@ -249,7 +264,7 @@ function collectInputs(stage) {
     data[inp.key] = el ? el.value.trim() : '';
   });
   extraInputs.forEach(inp => {
-    if (inp.type === 'radio') return; // vastikeMode already stored on click
+    if (inp.type === 'radio') return;
     const el = document.getElementById('inp_' + inp.key);
     data[inp.key] = el ? el.value.trim() : '';
   });
@@ -265,7 +280,6 @@ function buildUserSummary(stage) {
   const extraInputs = (stage.extraInputs || []).filter(i => i.type !== 'radio');
   const allInputs = [...regularInputs, ...extraInputs];
   const parts = [];
-  // Add vastikeMode summary
   if ((stage.extraInputs || []).some(i => i.key === 'vastikeMode')) {
     parts.push(`<strong>Vastikelaskenta:</strong> ${mode === 'osake' ? 'snt/osake/kk (osakeperusteinen)' : '€/m²/kk (neliöperusteinen)'}`);
   }
@@ -287,22 +301,21 @@ function buildUserSummary(stage) {
 function estimateSolarMWh(address, kwp) {
   kwp = parseFloat(kwp) || 0;
   const addr = (address || '').toLowerCase();
-  let irr = 900; // default Finland kWh/kWp/year
+  let irr = 900;
   if (addr.includes('helsinki') || addr.includes('espoo') || addr.includes('vantaa')) irr = 950;
   else if (addr.includes('tampere') || addr.includes('turku')) irr = 920;
   else if (addr.includes('oulu')) irr = 870;
   else if (addr.includes('rovaniemi') || addr.includes('lappi')) irr = 820;
-  return (kwp * irr * 0.8) / 1000; // MWh, 0.8 = system efficiency
+  return (kwp * irr * 0.8) / 1000;
 }
 
-// ── Loan calculation (annuity) ─────────────────────────────────────────
+// ── Loan calculation ───────────────────────────────────────────────────
 function calcAnnuity(principal, ratePercent, years) {
   const r = ratePercent / 100;
   if (r === 0) return principal / years;
   return principal * (r * Math.pow(1+r, years)) / (Math.pow(1+r, years) - 1);
 }
 
-// Tasalyhennys: constant principal per year, interest decreases each year
 function calcFlatPrincipalPayment(loanAmount, loanInt, loanYears, yearIndex) {
   const r = loanInt / 100;
   const principal = loanAmount / loanYears;
@@ -324,44 +337,40 @@ function calculate(copOverride) {
   const hasSolar    = data.hasSolar === 'yes';
   const solarMWh    = hasSolar ? estimateSolarMWh(data.solarAddress, data.solarKwp) : 0;
   const solarKwp    = parseFloat(data.solarKwp)     || 0;
+  const buildingCount = Math.max(1, parseInt(data.buildingCount) || 1);
   const heatEsc     = (parseFloat(data.heatEscalation) || 1.25) / 100;
   const loanType    = data.loanType || 'annuiteetti';
   const r           = loanInt / 100;
 
-  // ── Vastike mode: 'm2' (€/m²/kk) or 'osake' (snt/osake/kk) ──
   const vastikeMode   = data.vastikeMode || 'm2';
-  const totalBase     = parseFloat(data.totalBase) || 0; // either m² or share count
-  // For backward compatibility also accept legacy totalM2 key
+  const totalBase     = parseFloat(data.totalBase) || 0;
   const totalM2Legacy = parseFloat(data.totalM2) || 0;
-  const baseValue     = totalBase > 0 ? totalBase : totalM2Legacy; // m² or osakkeet
+  const baseValue     = totalBase > 0 ? totalBase : totalM2Legacy;
+  const hoito         = parseFloat(data.hoitovastike) || 0;
 
-  // hoitovastike is stored as entered:
-  //   m2 mode:    €/m²/kk   (e.g. 4.50)
-  //   osake mode: snt/osake/kk (e.g. 40)
-  const hoito = parseFloat(data.hoitovastike) || 0;
-
+  // Base calcs (year 1, original COP) — used for summary cards
   const elecNeeded  = kwhYear / COP;
   const netElec     = Math.max(0, elecNeeded - solarMWh);
   const newElecCost = netElec * elecPrice;
   const annualLoan  = loanYears > 0 ? calcAnnuity(loanAmount, loanInt, loanYears) : 0;
   const firstYearPayFlat = loanYears > 0 ? calcFlatPrincipalPayment(loanAmount, loanInt, loanYears, 1).total : 0;
   const grossSavings = yearlyTotal - newElecCost;
-
   const refLoanPay = loanType === 'tasalyhennys' ? firstYearPayFlat : annualLoan;
-
   const netSavings   = yearlyTotal - (newElecCost + refLoanPay);
+  const upgradedCOP  = COP + SVC.copImprovement;
 
-  // Hoitovastike impact calculations
+  // Pump unit count: 1 per 200 MWh (user-confirmed: 600 MWh → 3 units)
+  const pumpUnits = Math.max(1, Math.ceil(kwhYear / SVC.pumpUnitsPerMwh));
+
+  // Hoitovastike impact (year 1, energy+loan only — for summary display)
   let newHoitoDuringLoan = 0, newHoitoAfterLoan = 0;
   if (baseValue > 0) {
     if (vastikeMode === 'm2') {
-      // €/m²/kk: costDelta / m² / 12
       const costDeltaDuringLoan = (newElecCost + refLoanPay) - yearlyTotal;
       const costDeltaAfterLoan  = newElecCost - yearlyTotal;
       newHoitoDuringLoan = hoito + costDeltaDuringLoan / baseValue / 12;
       newHoitoAfterLoan  = hoito + costDeltaAfterLoan  / baseValue / 12;
     } else {
-      // snt/osake/kk: costDelta / osakkeet / 12 * 100 (euros → cents)
       const costDeltaDuringLoan = (newElecCost + refLoanPay) - yearlyTotal;
       const costDeltaAfterLoan  = newElecCost - yearlyTotal;
       newHoitoDuringLoan = hoito + (costDeltaDuringLoan / baseValue / 12) * 100;
@@ -369,16 +378,25 @@ function calculate(copOverride) {
     }
   }
 
-  // Year-by-year cashflow with escalation and amortization
+  // Year-by-year cashflow — includes ALL service costs and COP improvement
   let remaining  = loanAmount;
   let cumulative = 0;
   let paybackYear = null;
   let cashflowPositiveYear = null;
-  const cashflow  = [];
+  const cashflow = [];
   const years = loanYears > 0 ? loanYears + 1 : 15;
 
   for (let y = 1; y <= years; y++) {
+    // KL energy (escalating)
     const oldCostY = yearlyTotal * Math.pow(1 + heatEsc, y - 1);
+
+    // MLP electricity — COP improves from year after pump replacement
+    const effectiveCOP = y > SVC.copImprovementYear ? upgradedCOP : COP;
+    const elecNeededY  = kwhYear / effectiveCOP;
+    const netElecY     = Math.max(0, elecNeededY - solarMWh);
+    const newElecCostY = netElecY * elecPrice;
+
+    // Loan payment
     let interestY = 0, principalY = 0, loanPayY = 0;
     if (y <= loanYears && loanYears > 0) {
       if (loanType === 'tasalyhennys') {
@@ -391,53 +409,215 @@ function calculate(copOverride) {
         principalY = annualLoan - interestY;
         loanPayY   = annualLoan;
       }
-      remaining  = Math.max(0, remaining - principalY);
+      remaining = Math.max(0, remaining - principalY);
     }
-    const newCostY = newElecCost + loanPayY;
-    const netY     = oldCostY - newCostY;
-    cumulative    += netY;
+
+    // ── MLP service costs this year ──────────────────────────────────
+    let mlpServiceCostY = SVC.mlpAnnual;
+    const mlpServiceNotes = [];
+    if (y === SVC.pumpReplYear) {
+      const pumpCost = pumpUnits * SVC.pumpUnitCost;
+      mlpServiceCostY += pumpCost;
+      mlpServiceNotes.push(`🔧 Pumppu uusittu ${pumpUnits} kpl × ${fmt(SVC.pumpUnitCost)} € = ${fmtE(pumpCost)}`);
+    }
+
+    // ── Solar service costs this year ─────────────────────────────────
+    let solarServiceCostY = 0;
+    const solarServiceNotes = [];
+    if (hasSolar) {
+      if (SVC.inverterYears.includes(y)) {
+        const invCost = buildingCount * SVC.inverterCost;
+        solarServiceCostY += invCost;
+        solarServiceNotes.push(`⚡ Invertteri ${buildingCount} kpl × ${fmt(SVC.inverterCost)} € = ${fmtE(invCost)}`);
+      }
+      if (y === SVC.panelReplYear) {
+        solarServiceCostY += SVC.panelReplCost;
+        solarServiceNotes.push(`☀️ Paneelit uusittu ${fmtE(SVC.panelReplCost)}`);
+      }
+      if (y % SVC.solarInspInterval === 0) {
+        solarServiceCostY += SVC.solarInspCost;
+        solarServiceNotes.push(`🔍 Tarkastus ${fmtE(SVC.solarInspCost)}`);
+      }
+    }
+
+    // ── KL service costs this year ────────────────────────────────────
+    let klServiceCostY = SVC.klAnnual;
+    const klServiceNotes = [];
+    if (SVC.klHeatExchYears.includes(y)) {
+      klServiceCostY += SVC.klHeatExchCost;
+      klServiceNotes.push(`🔧 LJK uusittu ${fmtE(SVC.klHeatExchCost)}`);
+    }
+
+    // ── Totals ────────────────────────────────────────────────────────
+    const mlpTotalCostY = newElecCostY + loanPayY + mlpServiceCostY + solarServiceCostY;
+    const klTotalCostY  = oldCostY + klServiceCostY;
+    const netY          = klTotalCostY - mlpTotalCostY;
+    cumulative         += netY;
+
     if (paybackYear === null && cumulative >= 0) paybackYear = y;
     if (cashflowPositiveYear === null && netY >= 0) cashflowPositiveYear = y;
-    cashflow.push({ year:y, oldCost:oldCostY, elecCost:newElecCost,
-                    interest:interestY, principal:principalY, loanPay:loanPayY,
-                    newCost:newCostY, net:netY, cumulative });
-  }
-  if (!paybackYear) paybackYear = '>20';
 
-  return { kwhYear, COP, elecNeeded, solarMWh, netElec, newElecCost,
-           oldCost: yearlyTotal, monthlyFee, annualLoan, loanType, firstYearPayFlat, refLoanPay,
-           newTotalCost: newElecCost + refLoanPay,
-           grossSavings, netSavings, hoito, totalM2: baseValue, vastikeMode, heatEsc,
-           newHoitoDuringLoan, newHoitoAfterLoan,
-           loanAmount, loanInt, loanYears, solarKwp, hasSolar,
-           paybackYear, cashflowPositiveYear, cashflow, elecPrice };
+    // Vastike impact
+    let vastike = null;
+    if (baseValue > 0) {
+      vastike = vastikeMode === 'osake'
+        ? (netY / baseValue / 12) * 100
+        : netY / baseValue / 12;
+    }
+
+    cashflow.push({
+      year: y,
+      // KL side
+      oldCost: oldCostY, klServiceCost: klServiceCostY, klTotal: klTotalCostY,
+      klServiceNotes,
+      // MLP side
+      elecCost: newElecCostY, effectiveCOP,
+      interest: interestY, principal: principalY, loanPay: loanPayY,
+      mlpServiceCost: mlpServiceCostY, solarServiceCost: solarServiceCostY,
+      mlpTotal: mlpTotalCostY,
+      mlpServiceNotes, solarServiceNotes,
+      // Summary
+      net: netY, cumulative, vastike,
+      isCopUpgradeYear: y === SVC.copImprovementYear + 1,
+    });
+  }
+  if (!paybackYear) paybackYear = '>50';
+
+  return {
+    kwhYear, COP, upgradedCOP, elecNeeded, solarMWh, netElec, newElecCost,
+    oldCost: yearlyTotal, monthlyFee, annualLoan, loanType, firstYearPayFlat, refLoanPay,
+    newTotalCost: newElecCost + refLoanPay,
+    grossSavings, netSavings, hoito, totalM2: baseValue, vastikeMode, heatEsc,
+    newHoitoDuringLoan, newHoitoAfterLoan,
+    loanAmount, loanInt, loanYears, solarKwp, hasSolar, buildingCount, pumpUnits,
+    paybackYear, cashflowPositiveYear, cashflow, elecPrice,
+  };
 }
 
-// ── Report renderer ─────────────────────────────────────────────────────
+// ── 50-Year calculation ────────────────────────────────────────────────
+function calculate50Year(r) {
+  const YEARS = 50;
+  let klCumEnergy = 0, klCumService = 0, klCumEquip = 0;
+  let mlpCumEnergy = 0, mlpCumService = 0, mlpCumEquip = 0;
+  const rows = [];
+  let klRunning = 0, mlpRunning = 0;
+
+  for (let y = 1; y <= YEARS; y++) {
+    // KL energy (escalating)
+    const klEnergyY = r.oldCost * Math.pow(1 + r.heatEsc, y - 1);
+    klCumEnergy += klEnergyY;
+
+    // KL service
+    let klSvcY = SVC.klAnnual;
+    klCumService += SVC.klAnnual;
+    if (SVC.klHeatExchYears.includes(y)) {
+      klSvcY += SVC.klHeatExchCost;
+      klCumEquip += SVC.klHeatExchCost;
+    }
+
+    // MLP electricity — COP improves after pump replacement
+    const effCOP    = y > SVC.copImprovementYear ? r.upgradedCOP : r.COP;
+    const elecNeedY = r.kwhYear / effCOP;
+    const netElecY  = Math.max(0, elecNeedY - r.solarMWh);
+    const mlpElecY  = netElecY * r.elecPrice;
+    mlpCumEnergy += mlpElecY;
+
+    // MLP service
+    let mlpSvcY = SVC.mlpAnnual;
+    mlpCumService += SVC.mlpAnnual;
+    if (y === SVC.pumpReplYear) {
+      const c = r.pumpUnits * SVC.pumpUnitCost;
+      mlpSvcY += c;
+      mlpCumEquip += c;
+    }
+
+    // Solar service
+    let solarSvcY = 0;
+    if (r.hasSolar) {
+      if (SVC.inverterYears.includes(y)) {
+        const c = r.buildingCount * SVC.inverterCost;
+        solarSvcY += c;
+        mlpCumEquip += c;
+      }
+      if (y === SVC.panelReplYear) {
+        solarSvcY += SVC.panelReplCost;
+        mlpCumEquip += SVC.panelReplCost;
+      }
+      if (y % SVC.solarInspInterval === 0) {
+        solarSvcY += SVC.solarInspCost;
+        mlpCumService += SVC.solarInspCost;
+      }
+    }
+
+    const klTotalY  = klEnergyY + klSvcY;
+    const mlpTotalY = mlpElecY + mlpSvcY + solarSvcY;
+
+    klRunning  += klTotalY;
+    mlpRunning += mlpTotalY;
+
+    rows.push({ year: y, klTotal: klTotalY, mlpTotal: mlpTotalY, klRunning, mlpRunning, diff: klRunning - mlpRunning, isCopYear: y === SVC.copImprovementYear + 1 });
+  }
+
+  const klTotal  = klCumEnergy  + klCumService  + klCumEquip;
+  const mlpTotal = mlpCumEnergy + mlpCumService + mlpCumEquip;
+
+  return {
+    kl:  { energy: klCumEnergy,  service: klCumService,  equip: klCumEquip,  total: klTotal  },
+    mlp: { energy: mlpCumEnergy, service: mlpCumService, equip: mlpCumEquip, total: mlpTotal },
+    savings: klTotal - mlpTotal,
+    rows,
+  };
+}
+
+// ── Report renderer — Tab 1 ────────────────────────────────────────────
 function renderReport(r) {
   const rc = document.getElementById('reportContent');
   document.getElementById('reportSubtitle').textContent =
     `${fmt(r.kwhYear)} MWh → Maalämpö${r.hasSolar ? ' + Aurinko' : ''} (COP ${fmt(r.COP,1)})`;
 
   const maxBar = Math.max(r.oldCost, r.newTotalCost) * 1.1;
-  const oldPct = (r.oldCost / maxBar * 100).toFixed(1);
-  const newPct = (r.newTotalCost / maxBar * 100).toFixed(1);
 
   const solarRow = r.hasSolar ? `
     <div style="margin-top:10px;padding:12px 16px;background:rgba(52,211,153,0.08);border:1px solid rgba(52,211,153,0.25);border-radius:10px">
-      ☀️ <strong>Aurinkopaneelit ${fmt(r.solarKwp,1)} kWp</strong> tuottavat arviolta 
-      <strong style="color:var(--green)">${fmt(r.solarMWh,1)} MWh/v</strong>, 
+      ☀️ <strong>Aurinkopaneelit ${fmt(r.solarKwp,1)} kWp</strong> tuottavat arviolta
+      <strong style="color:var(--green)">${fmt(r.solarMWh,1)} MWh/v</strong>,
       joten nettosähköntarve on <strong>${fmt(r.netElec,1)} MWh/v</strong>.
     </div>` : '';
 
+  // Build cashflow table rows
   const cfRows = r.cashflow.map(row => {
-    const isBreak = row.cumulative >= r.loanAmount && (row.cumulative - (r.oldCost - r.newTotalCost)) < r.loanAmount;
-    return `<tr${isBreak?' class="breakeven"':''}>
+    const isBreak = row.cumulative >= 0 && (row.cumulative - row.net) < 0;
+    const allNotes = [...row.mlpServiceNotes, ...row.solarServiceNotes, ...row.klServiceNotes];
+    const hasEvents = allNotes.length > 0;
+
+    // Event badges
+    const eventBadges = [...row.mlpServiceNotes.map(n => `<span class="ev-badge ev-mlp">${n.split(' ').slice(0,2).join(' ')}</span>`),
+                         ...row.solarServiceNotes.map(n => `<span class="ev-badge ev-solar">${n.split(' ').slice(0,2).join(' ')}</span>`),
+                         ...row.klServiceNotes.map(n => `<span class="ev-badge ev-kl">${n.split(' ').slice(0,2).join(' ')}</span>`)].join('');
+
+    const vastikeStr = row.vastike !== null
+      ? `<td class="${row.vastike <= 0 ? 'positive-cell' : 'negative-cell'} vastike-cell">${(-row.vastike).toLocaleString('fi-FI', {minimumFractionDigits:2, maximumFractionDigits:2, signDisplay:'always'})}</td>`
+      : '';
+
+    // COP upgrade annotation row
+    const copRow = row.isCopUpgradeYear ? `
+      <tr class="cop-upgrade-row">
+        <td colspan="${r.totalM2 > 0 ? 10 : 9}" style="padding:6px 14px;text-align:left">
+          <span class="cop-upgrade-badge">⚡ COP paranee vuodesta ${SVC.copImprovementYear+1}: ${fmt(r.COP,1)} → ${fmt(r.upgradedCOP,1)} — uusi pumppu on ${((r.upgradedCOP/r.COP-1)*100).toFixed(0)}% energiatehokkaampi</span>
+        </td>
+      </tr>` : '';
+
+    return `${copRow}<tr${isBreak?' class="breakeven"':''}>
       <td>${row.year}</td>
-      <td>${fmtE(row.oldCost)}</td>
-      <td>${fmtE(row.newCost)}</td>
+      <td>${fmtE(row.klTotal)}</td>
+      <td>${fmtE(row.elecCost)}</td>
+      <td class="${row.mlpServiceCost + row.solarServiceCost > SVC.mlpAnnual + 200 ? 'event-cell' : 'neutral-cell'}">${fmtE(row.mlpServiceCost + row.solarServiceCost)}</td>
+      <td class="neutral-cell">${row.interest > 0 ? fmtE(row.interest) : '—'}</td>
+      <td class="neutral-cell">${row.principal > 0 ? fmtE(row.principal) : '—'}</td>
+      <td>${fmtE(row.mlpTotal)}</td>
       <td class="${row.net>=0?'positive-cell':'negative-cell'}">${row.net>=0?'+':''}${fmtE(row.net)}</td>
       <td class="${row.cumulative>=0?'positive-cell':'negative-cell'}">${row.cumulative>=0?'+':''}${fmtE(row.cumulative)}</td>
+      ${vastikeStr}
     </tr>`;
   }).join('');
 
@@ -483,68 +663,50 @@ function renderReport(r) {
       </div>
     </div>
 
-    <!-- Card 2: Cost impact -->
+    <!-- Card 2: Cost impact + Hoitovastike path -->
     <div class="report-card" style="margin-bottom:20px">
       <div class="rc-header" onclick="toggleCard(this)">
         <div class="rc-header-left">
           <div class="rc-icon green">💶</div>
-          <div><div class="rc-title">2. Taloudellinen vaikutus ja säästöt</div>
-          <div class="rc-subtitle">Lämmityskustannusten muutos ensimmäisenä vuotena</div></div>
+          <div><div class="rc-title">2. Taloudellinen vaikutus ja hoitovastike</div>
+          <div class="rc-subtitle">Lämmityskustannusten muutos sekä hoitovastikkeen kehitys</div></div>
         </div>
         <div class="rc-toggle">▼</div>
       </div>
       <div class="rc-body">
       <div class="savings-grid">
         <div class="savings-cell">
-          <div class="sc-label">Vanha lämmityskustannus (vuosi 1) <div class="info-icon" data-tip="Nykyinen arvioitu kaukolämpölasku vuodessa, huomioiden mahdollisen hinnannousun (1. vuosi).">?</div></div>
+          <div class="sc-label">Vanha lämmityskustannus (v. 1) <div class="info-icon" data-tip="Nykyinen kaukolämpölasku + vuosihuolto 500€ (ensimmäinen vuosi).">?</div></div>
           <div class="sc-value negative">${fmtE(r.oldCost)}</div>
-          <div class="sc-note">Kaukolämpö · +${(r.heatEsc*100).toFixed(2)}%/v korotus</div>
+          <div class="sc-note">Kaukolämpö energia · +${(r.heatEsc*100).toFixed(2)}%/v korotus</div>
         </div>
         <div class="savings-cell">
-          <div class="sc-label">Uusi sähkökustannus <div class="info-icon" data-tip="Maalämpöpumpun kuluttama sähkö kerrottuna nykyisellä sähkön hinnalla (sisältää aurinkopaneelien vähennyksen).">?</div></div>
+          <div class="sc-label">Uusi sähkökustannus <div class="info-icon" data-tip="Maalämpöpumpun sähkönkulutus kerrottuna sähkön hinnalla (sis. aurinkopaneelien vähennyksen).">?</div></div>
           <div class="sc-value neutral">${fmtE(r.newElecCost)}</div>
           <div class="sc-note">Maalämpösähkö / vuosi</div>
         </div>
         <div class="savings-cell">
-          <div class="sc-label">Lainanlyhennys / vuosi <div class="info-icon" data-tip="Investoinnin vuotuinen maksu valitulla lyhennysmallilla. Tasalyhennyksessä tämä näyttää ensimmäisen vuoden korkeimman erän.">?</div></div>
+          <div class="sc-label">Lainanlyhennys / vuosi <div class="info-icon" data-tip="Investoinnin vuotuinen maksu valitulla lyhennysmallilla.">?</div></div>
           <div class="sc-value neutral">${fmtE(r.refLoanPay)}</div>
           <div class="sc-note">${r.loanYears} v × ${fmt(r.loanInt,1)} % (${r.loanType==='tasalyhennys'?'v.1':'vakio'})</div>
         </div>
         <div class="savings-cell">
-          <div class="sc-label">Bruttosäästö (ilman lainaa) <div class="info-icon" data-tip="Kuinka paljon säästätte pelkissä energiakuluissa ennen kuin investoinnin rahoituskuluja otetaan huomioon.">?</div></div>
+          <div class="sc-label">Bruttosäästö (energia, ilman lainaa) <div class="info-icon" data-tip="Säästö pelkissä energiakuluissa ennen lainan rahoituskuluja.">?</div></div>
           <div class="sc-value positive">${fmtE(r.grossSavings)}</div>
-          <div class="sc-note">Vanha − uusi sähkö</div>
+          <div class="sc-note">Vanha energia − uusi sähkö</div>
         </div>
       </div>
       <div class="savings-highlight">
         <div>
-          <div class="sh-label">${r.netSavings >= 0 ? '✅ Nettosäästö lainanlyhennysten jälkeen (v. 1)' : '⚠️ Lisäkustannus lainanlyhennysten jälkeen (v. 1)'} <div class="info-icon" data-tip="Paljonko taloyhtiönne säästää (tai menettää) rahaa ensimmäisenä vuonna KAIKKIEN kulujen (sähkö + lyhennys) jälkeen.">?</div></div>
+          <div class="sh-label">${r.netSavings >= 0 ? '✅ Nettosäästö lainanlyhennysten jälkeen (v. 1)' : '⚠️ Lisäkustannus lainanlyhennysten jälkeen (v. 1)'} <div class="info-icon" data-tip="Paljonko taloyhtiönne säästää tai menettää rahaa ensimmäisenä vuonna KAIKKIEN kulujen (sähkö + lyhennys) jälkeen.">?</div></div>
           <div style="font-size:13px;color:var(--text3);margin-top:4px">Kustannus ${r.netSavings >= 0 ? 'laskee' : 'nousee'} ${fmtE(r.oldCost)} → ${fmtE(r.newTotalCost)}</div>
         </div>
-        <div class="sh-value" style="color:${r.netSavings >= 0 ? 'var(--green)' : 'var(--red)'}">${r.netSavings >= 0 ? '+' : ''}${fmtE(r.netSavings)} / v</div>
-      </div>
-      ${r.totalM2 > 0 ? `
-      <div class="hoito-dynamic" style="margin-top:20px;padding:20px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;">
-        <div style="font-weight:700;margin-bottom:8px;font-size:15px;display:flex;align-items:center;gap:8px;">
-          🏠 Milloin hoitovastiketta voidaan alentaa?
+        <div class="sh-value" style="color:${r.netSavings >= 0 ? 'var(--green)' : 'var(--red)'}">
+          ${r.netSavings >= 0 ? '+' : ''}${fmtE(r.netSavings)} / v
         </div>
-        <div style="font-size:14px;line-height:1.6;color:var(--text2)">
-          ${r.netSavings >= 0 ? 
-            `Uusi ratkaisu on <strong>välittömästi edullisempi</strong> kuin kaukolämpö. Taloyhtiöllä on mahdollisuus alentaa hoitovastiketta heti ensimmäisestä vuodesta alkaen.` 
-          : (r.cashflowPositiveYear && r.cashflowPositiveYear <= r.loanYears ? 
-            `Ensimmäisinä vuosina lainanhoitokulut ja sähkö ovat yhteensä hieman kalliimpia kuin vanha kaukolämpö. Koska kaukolämmön hinta kuitenkin nousee joka vuosi (ja tasalyhennyksessä lainan korkokulut laskevat), investointi saavuttaa kassavirtansa "breakeven"-pisteen <strong>vuonna ${r.cashflowPositiveYear}</strong>. <br><br>Tästä vuodesta eteenpäin uusi ratkaisu on vanhaa kaukolämpöä halvempi, ja taloyhtiö voi halutessaan alentaa hoitovastiketta, vaikka lainaa lyhennetään edelleen.` 
-          : `Laina-aikana (${r.loanYears} v) uusi ratkaisu on kassavirraltaan kalliimpi kuin kaukolämpö, joten hoitovastiketta ei voida alentaa ennen kuin laina on maksettu.`) }
-          <br><br>
-          ${r.vastikeMode === 'osake'
-            ? `<strong>Lainan maksamisen jälkeen (${r.loanYears} v)</strong> energiakulut putoavat minimiin ja hoitovastiketta voidaan alentaa pysyvästi: arvioitu säästö on silloin <strong>${fmt(r.hoito - r.newHoitoAfterLoan,2)} snt/osake/kk</strong> verrattuna nykytilanteeseen.`
-            : `<strong>Lainan maksamisen jälkeen (${r.loanYears} v)</strong> energiakulut putoavat minimiin ja hoitovastiketta voidaan alentaa pysyvästi: arvioitu säästö on silloin <strong>${fmt(r.hoito - r.newHoitoAfterLoan,2)} €/m²/kk</strong> verrattuna nykytilanteeseen.`
-          }
-        </div>
-      </div>` : `
-      <div style="margin-top:16px;padding:14px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:13px;color:var(--text2)">
-        📌 Syötä taloyhtiön ${r.vastikeMode === 'osake' ? 'osakkeiden kokonaismäärä' : 'kokonaispinta-ala (m²)'} nähdäksesi hoitovastikevaikutus.
-      </div>`}
       </div>
+
+      ${renderHoitoPath(r)}
       </div>
     </div>
 
@@ -553,8 +715,8 @@ function renderReport(r) {
       <div class="rc-header" onclick="toggleCard(this)">
         <div class="rc-header-left">
           <div class="rc-icon amber">📈</div>
-          <div><div class="rc-title">3. Investointi ja takaisinmaksuaikataulu</div>
-          <div class="rc-subtitle">Vuosikohtainen kassavirtataulukko</div></div>
+          <div><div class="rc-title">3. Investointi ja kassavirta (sis. huoltokulut)</div>
+          <div class="rc-subtitle">Vuosikohtainen taulukko — kaikki kustannukset sisältyvät Netto- ja Kumulat.-sarakkeisiin</div></div>
         </div>
         <div class="rc-toggle">▼</div>
       </div>
@@ -565,59 +727,39 @@ function renderReport(r) {
         <div class="loan-cell"><div class="lc-label">Laina-aika</div><div class="lc-value">${r.loanYears} v</div></div>
         <div class="loan-cell"><div class="lc-label">${r.loanType === 'tasalyhennys' ? 'Vuosierä (v.1, korkein)' : 'Vuosierä (vakio)'}</div><div class="lc-value">${fmtE(r.loanType === 'tasalyhennys' ? r.firstYearPayFlat : r.annualLoan)}</div></div>
         <div class="loan-cell"><div class="lc-label">Hintojen korotus</div><div class="lc-value">${(r.heatEsc*100).toFixed(2)} %/v</div></div>
-        <div class="loan-cell"><div class="lc-label">COP-kerroin</div><div class="lc-value">${fmt(r.COP,1)}</div></div>
+        <div class="loan-cell"><div class="lc-label">COP-kerroin</div><div class="lc-value">${fmt(r.COP,1)} → ${fmt(r.upgradedCOP,1)} (v.${SVC.copImprovementYear+1})</div></div>
         <div class="loan-cell" style="border-color:${r.loanType==='tasalyhennys'?'rgba(52,211,153,0.4)':'rgba(129,140,248,0.4)'}">
           <div class="lc-label">Lyhennysmalli</div>
           <div class="lc-value" style="color:${r.loanType==='tasalyhennys'?'var(--green)':'var(--indigo)'}">${r.loanType === 'tasalyhennys' ? '📉 Tasalyhennys' : '📊 Annuiteetti'}</div>
         </div>
+        ${r.hasSolar ? `<div class="loan-cell"><div class="lc-label">Rakennuksia / inverttereitä</div><div class="lc-value">${r.buildingCount} kpl</div></div>` : ''}
       </div>
       <div class="cf-table-wrap">
         <table class="cf-table">
           <thead><tr>
             <th>Vuosi</th>
-            <th>Kaukolämpö *</th>
-            <th>Sähkö</th>
+            <th>KL yht.†</th>
+            <th>Sähkö MLP</th>
+            <th title="Sisältää: MLP vuosihuolto ${SVC.mlpAnnual}€${r.hasSolar?', solar-tarkastukset, invertteri- ja paneelipäivitykset':''} sekä pumppu uusinta vuonna ${SVC.pumpReplYear}">Huolto MLP‡</th>
             <th>Korko</th>
             <th>Lyhennys</th>
-            <th>Uusi yht.</th>
+            <th>MLP yht.</th>
             <th>Netto</th>
             <th>Kumulat.</th>
-            ${r.totalM2 > 0 ? `<th title="Vastikkeen muutos vs. nykyinen kaukolämpö. Negatiivinen (vihreä) = vastiketta voi alentaa. Positiivinen (punainen) = lisärahoitustarve.">${r.vastikeMode === 'osake' ? 'Vastike snt/osake/kk' : 'Vastike €/m²/kk'}</th>` : ''}
+            ${r.totalM2 > 0 ? `<th title="Hoitovastikkeen muutos vs. nykyinen kaukolämpö. Negatiivinen = vastike alenee.">${r.vastikeMode === 'osake' ? 'Vastike snt/os/kk' : 'Vastike €/m²/kk'}</th>` : ''}
           </tr></thead>
-          <tbody>${r.cashflow.map(row => {
-            const isBreak = row.cumulative >= 0 && (row.cumulative - row.net) < 0;
-            let vastike = null;
-            if (r.totalM2 > 0) {
-              if (r.vastikeMode === 'osake') {
-                // snt/osake/kk = (net €/v) / osakkeet / 12 * 100
-                vastike = (row.net / r.totalM2 / 12) * 100;
-              } else {
-                vastike = row.net / r.totalM2 / 12;
-              }
-            }
-            const vastikeStr = vastike !== null
-              ? `<td class="${vastike <= 0 ? 'positive-cell' : 'negative-cell'} vastike-cell">${(-vastike).toLocaleString('fi-FI', {minimumFractionDigits:2, maximumFractionDigits:2, signDisplay:'always'})}</td>`
-              : '';
-            return `<tr${isBreak ? ' class="breakeven"' : ''}>
-              <td>${row.year}</td>
-              <td>${fmtE(row.oldCost)}</td>
-              <td>${fmtE(row.elecCost)}</td>
-              <td class="neutral-cell">${row.interest > 0 ? fmtE(row.interest) : '—'}</td>
-              <td class="neutral-cell">${row.principal > 0 ? fmtE(row.principal) : '—'}</td>
-              <td>${fmtE(row.newCost)}</td>
-              <td class="${row.net >= 0 ? 'positive-cell' : 'negative-cell'}">${row.net >= 0 ? '+' : ''}${fmtE(row.net)}</td>
-              <td class="${row.cumulative >= 0 ? 'positive-cell' : 'negative-cell'}">${row.cumulative >= 0 ? '+' : ''}${fmtE(row.cumulative)}</td>
-              ${vastikeStr}
-            </tr>`;
-          }).join('')}          </tbody>
+          <tbody>${cfRows}</tbody>
         </table>
       </div>
-      <div class="cf-footnote">* Kaukolämpöhinta kasvaa ${(r.heatEsc*100).toFixed(2)}% vuodessa</div>
-
+      <div class="cf-legend">
+        <div class="cf-legend-item"><span class="legend-dot legend-kl"></span> <strong>KL yht.</strong> = kaukolämpö energia + vuosihuolto ${SVC.klAnnual} €/v${SVC.klHeatExchYears.filter(y=>y<=r.loanYears+1).length ? ` + LJK uusinta vuosina ${SVC.klHeatExchYears.filter(y=>y<=r.loanYears+2).join(' & ')}` : ''}</div>
+        <div class="cf-legend-item"><span class="legend-dot legend-mlp"></span> <strong>Huolto MLP</strong> = vuosihuolto ${SVC.mlpAnnual} €/v + pumppu uusinta v.${SVC.pumpReplYear} (${r.pumpUnits} kpl × ${fmt(SVC.pumpUnitCost)} €)${r.hasSolar ? ` + invertteri v.${SVC.inverterYears.join('/')} (${r.buildingCount} kpl × ${fmt(SVC.inverterCost)} €)` : ''}</div>
+        <div class="cf-legend-item"><span class="legend-dot legend-cop"></span> <strong>COP ${fmt(r.COP,1)} → ${fmt(r.upgradedCOP,1)}</strong> vuodesta ${SVC.copImprovementYear+1} — uusi pumppu laskee sähkönkulutusta</div>
       </div>
+      <div class="cf-footnote">† Kaukolämpöhinta kasvaa ${(r.heatEsc*100).toFixed(2)}% vuodessa · ‡ Sisältää kaikki laitekorvaukset ja huollon</div>
       </div>
     </div>
-    
+
     ${r.hasSolar ? `
     <!-- Card 4: Solar facts -->
     <div class="report-card">
@@ -635,19 +777,516 @@ function renderReport(r) {
           <div style="margin-top:12px;">Tässä laskelmassa on kuitenkin käytetty hieman varovaisempaa ja realistista arviota:</div>
           <ul style="margin-left:20px;margin-top:8px;margin-bottom:16px;">
             <li style="margin-bottom:6px;"><strong>Tuotto-olettama:</strong> 1 kWp tuottaa vuodessa keskimäärin <strong>720 kWh (0,72 MWh)</strong> hyödynnettävää sähköä.</li>
-            <li style="margin-bottom:6px;"><strong>Omakäyttö:</strong> Oletamme, että tämä määrä pystytään hyödyntämään täysin taloyhtiön oman maalämpöpumpun ja kiinteistösähkön tarpeisiin (niin sanottu omakäyttö). Koska aurinkosähköä syntyy eniten kesällä, ylijäävää sähköä voidaan todellisuudessa joutua myymään sähköverkkoon. Myynnistä saatavaa korvausta ei ole tässä raportissa huomioitu ollenkaan, mikä jättää säästöarvioon turvamarginaalia.</li>
+            <li style="margin-bottom:6px;"><strong>Omakäyttö:</strong> Oletamme, että tämä määrä pystytään hyödyntämään täysin taloyhtiön oman maalämpöpumpun ja kiinteistösähkön tarpeisiin. Koska aurinkosähköä syntyy eniten kesällä, ylijäävää sähköä voidaan todellisuudessa joutua myymään sähköverkkoon. Myynnistä saatavaa korvausta ei ole tässä raportissa huomioitu ollenkaan, mikä jättää säästöarvioon turvamarginaalia.</li>
           </ul>
           <div style="padding:16px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;">
             <strong>Teidän kohteeseenne suunniteltu järjestelmä:</strong><br>
             Paneelien nimellisteho: <strong style="color:var(--text)">${r.solarKwp} kWp</strong><br>
-            Arvioitu hyödynnettävä vuosituotto: <strong style="color:var(--text)">${fmt(r.solarKwp * 0.72, 1)} MWh</strong>
+            Arvioitu hyödynnettävä vuosituotto: <strong style="color:var(--text)">${fmt(r.solarKwp * 0.72, 1)} MWh</strong><br>
+            Rakennuksia / inverttereitä: <strong style="color:var(--text)">${r.buildingCount} kpl</strong>
           </div>
         </div>
       </div>
     </div>
     ` : ''}
   `;
+}
 
+// ── Hoitovastike path (3-box timeline) ────────────────────────────────
+function renderHoitoPath(r) {
+  if (r.totalM2 <= 0) {
+    return `<div style="margin-top:16px;padding:14px 16px;background:var(--surface2);border:1px solid var(--border);border-radius:10px;font-size:13px;color:var(--text2)">
+      📌 Syötä taloyhtiön ${r.vastikeMode === 'osake' ? 'osakkeiden kokonaismäärä' : 'kokonaispinta-ala (m²)'} nähdäksesi hoitovastikevaikutus.
+    </div>`;
+  }
+
+  const unit = r.vastikeMode === 'osake' ? 'snt/os/kk' : '€/m²/kk';
+  const dec = r.vastikeMode === 'osake' ? 2 : 2;
+  const current  = r.hoito;
+  const duringLoan = r.newHoitoDuringLoan;
+  const afterLoan  = r.newHoitoAfterLoan;
+  const deltaDuring = duringLoan - current;
+  const deltaAfter  = afterLoan  - current;
+
+  const fmtDelta = (d) => `${d >= 0 ? '+' : ''}${fmt(Math.abs(d), dec)} ${unit}`;
+  const colorDuring = deltaDuring <= 0 ? 'var(--green)' : 'var(--amber)';
+  const colorAfter  = deltaAfter  <= 0 ? 'var(--green)' : 'var(--red)';
+
+  let explanationText = '';
+  if (deltaDuring <= 0) {
+    explanationText = `Maalämpö on <strong>heti ensimmäisestä vuodesta alkaen edullisempi</strong> kuin kaukolämpö. Taloyhtiöllä on mahdollisuus alentaa hoitovastiketta välittömästi.`;
+  } else if (r.cashflowPositiveYear && r.cashflowPositiveYear <= r.loanYears) {
+    explanationText = `Lainanlyhennysaikana kulut ovat hetkellisesti korkeammat, mutta koska kaukolämmön hinta nousee vuosittain, investointi saavuttaa positiivisen kassavirran <strong>vuonna ${r.cashflowPositiveYear}</strong>. Tästä eteenpäin hoitovastiketta voidaan halutessaan alentaa.`;
+  } else {
+    explanationText = `Laina-aikana (${r.loanYears} v) kassavirta on negatiivinen. Hoitovastiketta voidaan alentaa merkittävästi lainan maksun jälkeen.`;
+  }
+
+  return `
+    <div class="hoito-path-wrap" style="margin-top:24px">
+      <div class="hoito-path-title">🏠 Hoitovastikkeen kehitys — kolme vaihetta</div>
+      <div class="hoito-path-boxes">
+        <div class="hoito-box">
+          <div class="hb-phase">Nyt</div>
+          <div class="hb-value">${fmt(current, dec)}</div>
+          <div class="hb-unit">${unit}</div>
+          <div class="hb-desc">Nykyinen hoitovastike</div>
+        </div>
+        <div class="hoito-arrow">→</div>
+        <div class="hoito-box">
+          <div class="hb-phase">Laina-aikana (${r.loanYears} v)</div>
+          <div class="hb-value" style="color:${colorDuring}">${fmt(duringLoan, dec)}</div>
+          <div class="hb-unit">${unit}</div>
+          <div class="hb-delta" style="color:${colorDuring}">${fmtDelta(deltaDuring)}</div>
+          <div class="hb-desc">${deltaDuring <= 0 ? '✅ Laskee heti' : '⚠️ Nousee väliaikaisesti'}</div>
+        </div>
+        <div class="hoito-arrow">→</div>
+        <div class="hoito-box">
+          <div class="hb-phase">Lainan jälkeen</div>
+          <div class="hb-value" style="color:${colorAfter}">${fmt(afterLoan, dec)}</div>
+          <div class="hb-unit">${unit}</div>
+          <div class="hb-delta" style="color:${colorAfter}">${fmtDelta(deltaAfter)}</div>
+          <div class="hb-desc">✅ Pysyvä alennus</div>
+        </div>
+      </div>
+      <div class="hoito-explanation">${explanationText}</div>
+    </div>`;
+}
+
+// ── Tab 2: 50-year total cost comparison ──────────────────────────────
+function renderTab2(r) {
+  const panel = document.getElementById('tab2Panel');
+  if (!panel) return;
+  const d50 = calculate50Year(r);
+
+  const klMax = d50.kl.total;
+  const mlpMax = d50.mlp.total;
+  const biggerTotal = Math.max(klMax, mlpMax);
+
+  // Stacked bar segments (as % of bigger total)
+  const klEnergyPct  = (d50.kl.energy  / biggerTotal * 100).toFixed(1);
+  const klServicePct = (d50.kl.service / biggerTotal * 100).toFixed(1);
+  const klEquipPct   = (d50.kl.equip   / biggerTotal * 100).toFixed(1);
+  const mlpEnergyPct  = (d50.mlp.energy  / biggerTotal * 100).toFixed(1);
+  const mlpServicePct = (d50.mlp.service / biggerTotal * 100).toFixed(1);
+  const mlpEquipPct   = (d50.mlp.equip   / biggerTotal * 100).toFixed(1);
+
+  // 50-year table (collapsible)
+  const tableRows50 = d50.rows.map(row => {
+    const copBadge = row.isCopYear ? `<span class="cop-up-badge">⚡ COP↑</span>` : '';
+    return `<tr${row.diff >= 0 ? ' class="row-positive"' : ''}>
+      <td>${row.year}${copBadge}</td>
+      <td>${fmtE(row.klTotal)}</td>
+      <td>${fmtE(row.mlpTotal)}</td>
+      <td class="${row.diff >= 0 ? 'positive-cell' : 'negative-cell'}">${row.diff >= 0 ? '+' : ''}${fmtE(row.diff)}</td>
+      <td class="${row.klRunning > row.mlpRunning ? 'positive-cell' : 'negative-cell'}">${fmtE(row.diff >= 0 ? row.diff : 0)}</td>
+    </tr>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <!-- Hero savings -->
+    <div class="cost50-hero">
+      <div class="c50-eyebrow">50 vuoden kokonaishyöty — energia + huolto + laitekorvaukset</div>
+      <div class="c50-big">${fmtE(d50.savings)}</div>
+      <div class="c50-sub">säästät valitsemalla maalämpö${r.hasSolar ? ' + aurinko' : ''} vs. kaukolämpö</div>
+    </div>
+
+    <!-- Side-by-side breakdown -->
+    <div class="cost50-cols">
+      <div class="cost50-col cost50-kl">
+        <div class="col50-header">
+          <div class="col50-icon">🔥</div>
+          <div>
+            <div class="col50-title">Kaukolämpö</div>
+            <div class="col50-sub">50 vuoden kokonaiskustannus</div>
+          </div>
+        </div>
+        <div class="col50-rows">
+          <div class="col50-row">
+            <div class="col50-label">Energiakulut</div>
+            <div class="col50-val">${fmtE(Math.round(d50.kl.energy))}</div>
+          </div>
+          <div class="col50-row">
+            <div class="col50-label">Vuosihuolto (${SVC.klAnnual} €/v × 50)</div>
+            <div class="col50-val">${fmtE(d50.kl.service)}</div>
+          </div>
+          <div class="col50-row">
+            <div class="col50-label">Laitteiden uusiminen <span class="col50-note">(LJK v.22 &amp; v.42)</span></div>
+            <div class="col50-val">${fmtE(d50.kl.equip)}</div>
+          </div>
+        </div>
+        <div class="col50-total">
+          <div class="col50-total-label">Yhteensä 50 v</div>
+          <div class="col50-total-val kl-total-val">${fmtE(Math.round(d50.kl.total))}</div>
+        </div>
+      </div>
+
+      <div class="cost50-savings-badge">
+        <div class="csb-label">Säästät</div>
+        <div class="csb-value">${fmtE(d50.savings)}</div>
+        <div class="csb-sub">50 vuodessa</div>
+      </div>
+
+      <div class="cost50-col cost50-mlp">
+        <div class="col50-header">
+          <div class="col50-icon">♻️</div>
+          <div>
+            <div class="col50-title">Maalämpö${r.hasSolar ? ' + Aurinko' : ''}</div>
+            <div class="col50-sub">50 vuoden kokonaiskustannus</div>
+          </div>
+        </div>
+        <div class="col50-rows">
+          <div class="col50-row">
+            <div class="col50-label">Sähkökulut <span class="col50-note">(COP paranee v.${SVC.copImprovementYear+1})</span></div>
+            <div class="col50-val">${fmtE(Math.round(d50.mlp.energy))}</div>
+          </div>
+          <div class="col50-row">
+            <div class="col50-label">Vuosihuolto (${SVC.mlpAnnual} €/v × 50${r.hasSolar ? ' + solar' : ''})</div>
+            <div class="col50-val">${fmtE(d50.mlp.service)}</div>
+          </div>
+          <div class="col50-row">
+            <div class="col50-label">Laitteiden uusiminen <span class="col50-note">(pumppu + ${r.hasSolar ? 'invertteri + paneelit' : 'lisälaitteet'})</span></div>
+            <div class="col50-val">${fmtE(d50.mlp.equip)}</div>
+          </div>
+        </div>
+        <div class="col50-total">
+          <div class="col50-total-label">Yhteensä 50 v</div>
+          <div class="col50-total-val mlp-total-val">${fmtE(Math.round(d50.mlp.total))}</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Stacked bars -->
+    <div class="stacked-bars-wrap">
+      <div class="sb-row">
+        <div class="sb-label">🔥 Kaukolämpö</div>
+        <div class="sb-track">
+          <div class="sb-seg sb-energy-kl" style="width:${klEnergyPct}%" title="Energia: ${fmtE(Math.round(d50.kl.energy))}"></div>
+          <div class="sb-seg sb-service-kl" style="width:${klServicePct}%" title="Huolto: ${fmtE(d50.kl.service)}"></div>
+          <div class="sb-seg sb-equip-kl" style="width:${klEquipPct}%" title="Laitteet: ${fmtE(d50.kl.equip)}"></div>
+        </div>
+        <div class="sb-total">${fmtE(Math.round(d50.kl.total))}</div>
+      </div>
+      <div class="sb-row">
+        <div class="sb-label">♻️ Maalämpö</div>
+        <div class="sb-track">
+          <div class="sb-seg sb-energy-mlp" style="width:${mlpEnergyPct}%" title="Energia: ${fmtE(Math.round(d50.mlp.energy))}"></div>
+          <div class="sb-seg sb-service-mlp" style="width:${mlpServicePct}%" title="Huolto: ${fmtE(d50.mlp.service)}"></div>
+          <div class="sb-seg sb-equip-mlp" style="width:${mlpEquipPct}%" title="Laitteet: ${fmtE(d50.mlp.equip)}"></div>
+        </div>
+        <div class="sb-total">${fmtE(Math.round(d50.mlp.total))}</div>
+      </div>
+      <div class="sb-legend">
+        <span><span class="sbl-dot" style="background:#F59E0B"></span>Energia</span>
+        <span><span class="sbl-dot" style="background:#6366F1"></span>Vuosihuolto</span>
+        <span><span class="sbl-dot" style="background:#EF4444"></span>Laitteet</span>
+      </div>
+    </div>
+
+    <!-- Cumulative cost chart -->
+    ${renderCumulativeChart(r, d50)}
+
+    <!-- COP improvement explainer -->
+    ${renderCopExplainer(r)}
+
+    <!-- 50-year table (collapsible) -->
+    <div class="report-card" style="margin-top:24px">
+      <div class="rc-header" onclick="toggleCard(this)">
+        <div class="rc-header-left">
+          <div class="rc-icon amber">📅</div>
+          <div><div class="rc-title">Vuosikohtainen 50-vuoden taulukko</div>
+          <div class="rc-subtitle">Klikkaa auki — näet kumulative eron vuosi vuodelta</div></div>
+        </div>
+        <div class="rc-toggle collapsed">▶</div>
+      </div>
+      <div class="rc-body" style="display:none">
+        <div class="cf-table-wrap">
+          <table class="cf-table">
+            <thead><tr>
+              <th>Vuosi</th>
+              <th>KL (vuosi)</th>
+              <th>MLP (vuosi)</th>
+              <th>Ero (vuosi)</th>
+              <th>Kumulat. säästö</th>
+            </tr></thead>
+            <tbody>${tableRows50}</tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Transparent assumptions -->
+    <div class="assumptions-box">
+      <div class="ab-header" onclick="this.parentElement.classList.toggle('open')">
+        <span>🔍 Laskelman oletukset — klikkaa auki</span>
+        <span class="ab-arrow">▶</span>
+      </div>
+      <div class="ab-body">
+        <div class="ab-intro">Kaikki alla olevat luvut perustuvat julkisiin alan tietoihin ja teollisuuden ennusteisiin. Korvaushinnat ovat tulevaisuuden hintoja, jotka ottavat huomioon teknologian kehittymisen.</div>
+        <table class="ab-table">
+          <thead><tr><th>Kohde</th><th>Oletus</th><th>Peruste</th></tr></thead>
+          <tbody>
+            <tr><td>MLP vuosihuolto</td><td>${SVC.mlpAnnual} €/v</td><td>Suodattimet, kylmäaine, anturit — alan standardikäytäntö Suomessa</td></tr>
+            <tr><td>KL vuosihuolto</td><td>${SVC.klAnnual} €/v</td><td>Lämmönjakokeskuksen huolto, pumput, säätöventtiilien tarkastus</td></tr>
+            <tr><td>Maalämpöpumppu uusiminen</td><td>${SVC.pumpUnitsPerMwh === 200 ? `${r.pumpUnits} kpl × ${fmt(SVC.pumpUnitCost)} € v.${SVC.pumpReplYear}` : ''}</td><td>Nykyhinta ~25–30k€/yksikkö · Vuoteen 2047 mennessä -20–25% (IEA/teollisuusennuste) · Kaivo pysyy (50–100v elinikä)</td></tr>
+            <tr><td>Lämmönjakokeskus (KL)</td><td>2 × ${fmt(SVC.klHeatExchCost)} € (v.22 &amp; v.42)</td><td>Elinikä 20–25v → kaksi vaihtoa 50v aikana · Kerrostalon tyypillinen uusintahinta</td></tr>
+            ${r.hasSolar ? `<tr><td>Aurinkoinvertteri</td><td>${r.buildingCount} × ${fmt(SVC.inverterCost)} € (v.12/25/38)</td><td>Nykyhinta 25-30kW: 2 000–3 500 € · Vuoteen 2037: ~1 500–2 000 € (markkinakilpailu, Huawei/Sungrow) · 12–13v elinikä</td></tr>` : ''}
+            ${r.hasSolar ? `<tr><td>Aurinkopaneelit</td><td>${fmt(SVC.panelReplCost)} € v.${SVC.panelReplYear}</td><td>Paneelit kestävät 25–35v · Vaihdetaan kerran 50v aikana</td></tr>` : ''}
+            ${r.hasSolar ? `<tr><td>Solar-tarkastukset</td><td>${fmt(SVC.solarInspCost)} € / ${SVC.solarInspInterval} v</td><td>Liitokset, kaapelit, telineet — ammattilainen joka 4. vuosi</td></tr>` : ''}
+            <tr><td>COP-parannus</td><td>+${SVC.copImprovement} (v.${SVC.copImprovementYear+1})</td><td>Historiallinen kehitys ~0,1 COP/vuosikymmen · Muuttuvanopeuksinen kompressori, R32-kylmäaine, älyohjaus</td></tr>
+            <tr><td>Kaukolämpöhinnan korotus</td><td>${(r.heatEsc*100).toFixed(2)} %/v</td><td>Käyttäjän syöttämä arvo (historiallinen 1–3 %/v)</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  `;
+  // Set up chart interactivity after DOM is written
+  initCumulativeChart(r, d50);
+}
+
+// ── Cumulative Cost Chart ─────────────────────────────────────────────
+function renderCumulativeChart(r, d50) {
+  const W = 1000, H = 440;
+  const ml = 95, mr = 50, mt = 50, mb = 65;
+  const cW = W - ml - mr, cH = H - mt - mb;
+
+  const maxVal = Math.max(...d50.rows.map(row => row.klRunning));
+  const xS = y => ((y - 1) / 49) * cW + ml;
+  const yS = v => cH - (v / maxVal) * cH + mt;
+
+  // Y-axis ticks — 6 lines
+  const yTickCount = 6;
+  const yStep = maxVal / yTickCount;
+  const gridLines = Array.from({length: yTickCount + 1}, (_, i) => {
+    const val = yStep * i;
+    const y = yS(val).toFixed(1);
+    const label = val >= 1e6 ? `${(val/1e6).toLocaleString('fi-FI',{minimumFractionDigits:1,maximumFractionDigits:1})} M€`
+                             : `${Math.round(val/1000)} k€`;
+    return `<line x1="${ml}" y1="${y}" x2="${W-mr}" y2="${y}" stroke="rgba(255,255,255,0.06)" stroke-width="1"/>
+      <text x="${ml-10}" y="${y}" text-anchor="end" dominant-baseline="middle" fill="#475569" font-size="11" font-family="Inter,sans-serif">${label}</text>`;
+  }).join('');
+
+  // X-axis ticks — every 5 years
+  const xTicks = Array.from({length: 10}, (_, i) => {
+    const year = (i + 1) * 5;
+    const x = xS(year).toFixed(1);
+    return `<line x1="${x}" y1="${mt}" x2="${x}" y2="${(mt+cH).toFixed(1)}" stroke="rgba(255,255,255,0.04)" stroke-width="1"/>
+      <text x="${x}" y="${(mt+cH+18).toFixed(1)}" text-anchor="middle" fill="#475569" font-size="11" font-family="Inter,sans-serif">v.${year}</text>`;
+  }).join('');
+
+  // SVG paths
+  const klPath  = d50.rows.map((row,i) => `${i===0?'M':'L'}${xS(row.year).toFixed(1)},${yS(row.klRunning).toFixed(1)}`).join(' ');
+  const mlpPath = d50.rows.map((row,i) => `${i===0?'M':'L'}${xS(row.year).toFixed(1)},${yS(row.mlpRunning).toFixed(1)}`).join(' ');
+
+  // Filled area (KL forward, then MLP in reverse)
+  const fillPath = d50.rows.map((row,i) => `${i===0?'M':'L'}${xS(row.year).toFixed(1)},${yS(row.klRunning).toFixed(1)}`).join(' ')
+    + ' ' + [...d50.rows].reverse().map(row => `L${xS(row.year).toFixed(1)},${yS(row.mlpRunning).toFixed(1)}`).join(' ') + ' Z';
+
+  // Event markers — key capital events
+  const events = [
+    ...(r.hasSolar ? [
+      { year: 12, label: 'Invertteri', color: '#FBBF24', yPos: 'top' },
+      { year: 25, label: 'Invertteri', color: '#FBBF24', yPos: 'top' },
+      { year: 38, label: 'Invertteri', color: '#FBBF24', yPos: 'top' },
+      { year: 30, label: 'Paneelit', color: '#34D399', yPos: 'bottom' },
+    ] : []),
+    { year: 22, label: 'Pumppu + LJK', color: '#818CF8', yPos: 'bottom' },
+    { year: 42, label: 'LJK', color: '#F87171', yPos: 'top' },
+    { year: 23, label: 'COP↑', color: '#34D399', yPos: 'mid', isCOP: true },
+  ];
+
+  const eventMarkersHTML = events.map(e => {
+    const x = xS(e.year).toFixed(1);
+    const labelY = e.yPos === 'top' ? (mt + 18) : e.yPos === 'bottom' ? (mt + cH - 8) : (mt + cH/2);
+    const dash = e.isCOP ? '5,3' : '3,4';
+    const opacity = e.isCOP ? '0.9' : '0.5';
+    return `<line x1="${x}" y1="${mt}" x2="${x}" y2="${(mt+cH).toFixed(1)}" stroke="${e.color}" stroke-width="${e.isCOP ? 1.5 : 1}" stroke-dasharray="${dash}" opacity="${opacity}"/>
+      <text x="${(parseFloat(x)+4).toFixed(1)}" y="${labelY.toFixed(1)}" fill="${e.color}" font-size="9" font-family="Inter,sans-serif" font-weight="600" opacity="0.85">${e.label}</text>`;
+  }).join('');
+
+  return `
+    <div class="cum-chart-card">
+      <div class="cum-chart-header">
+        <div class="cum-chart-title-row">
+          <div>
+            <div class="cum-chart-title">📈 Kumulatiiviset kokonaiskustannukset vuosi vuodelta</div>
+            <div class="cum-chart-sub">50 vuoden kerääntyvä kustannus — energia + huolto + laitekorvaukset kaikki mukana. Vie hiiri vuoden päälle.</div>
+          </div>
+          <div class="cum-chart-legend">
+            <span class="ccl-item"><span class="ccl-line" style="background:#EF4444"></span>Kaukolämpö</span>
+            <span class="ccl-item"><span class="ccl-line" style="background:#34D399"></span>Maalämpö${r.hasSolar ? ' + Aurinko' : ''}</span>
+            <span class="ccl-item"><span class="ccl-area"></span>Säästöalue</span>
+          </div>
+        </div>
+      </div>
+      <div class="cum-chart-body" id="cumChartWrap">
+        <svg id="cumChartSVG" viewBox="0 0 ${W} ${H}" width="100%" preserveAspectRatio="xMidYMid meet" style="overflow:visible;display:block">
+          <defs>
+            <linearGradient id="klLineGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#F87171"/>
+              <stop offset="100%" stop-color="#EF4444"/>
+            </linearGradient>
+            <linearGradient id="mlpLineGrad" x1="0" y1="0" x2="1" y2="0">
+              <stop offset="0%" stop-color="#34D399"/>
+              <stop offset="100%" stop-color="#22D3EE"/>
+            </linearGradient>
+            <linearGradient id="savingsGrad" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#34D399" stop-opacity="0.20"/>
+              <stop offset="100%" stop-color="#34D399" stop-opacity="0.03"/>
+            </linearGradient>
+            <filter id="lineShadow" x="-5%" y="-5%" width="110%" height="110%">
+              <feDropShadow dx="0" dy="2" stdDeviation="3" flood-color="#000" flood-opacity="0.3"/>
+            </filter>
+            <clipPath id="cumClip">
+              <rect x="${ml}" y="${mt}" width="${cW}" height="${cH}"/>
+            </clipPath>
+          </defs>
+
+          <!-- Y grid + labels -->
+          ${gridLines}
+
+          <!-- X ticks -->
+          ${xTicks}
+
+          <!-- Axes -->
+          <line x1="${ml}" y1="${mt}" x2="${ml}" y2="${mt+cH}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+          <line x1="${ml}" y1="${mt+cH}" x2="${W-mr}" y2="${mt+cH}" stroke="rgba(255,255,255,0.12)" stroke-width="1"/>
+
+          <!-- Axis label -->
+          <text x="14" y="${mt + cH/2}" text-anchor="middle" fill="#475569" font-size="11" font-family="Inter,sans-serif" transform="rotate(-90,14,${(mt+cH/2).toFixed(0)})">Kumulatiivinen kustannus</text>
+
+          <!-- Savings fill area -->
+          <path d="${fillPath}" fill="url(#savingsGrad)" clip-path="url(#cumClip)"/>
+
+          <!-- Event markers (below lines) -->
+          <g clip-path="url(#cumClip)">${eventMarkersHTML}</g>
+
+          <!-- KL line -->
+          <path d="${klPath}" fill="none" stroke="url(#klLineGrad)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#lineShadow)" clip-path="url(#cumClip)"/>
+
+          <!-- MLP line -->
+          <path d="${mlpPath}" fill="none" stroke="url(#mlpLineGrad)" stroke-width="3" stroke-linejoin="round" stroke-linecap="round" filter="url(#lineShadow)" clip-path="url(#cumClip)"/>
+
+          <!-- Hover crosshair (updated by JS) -->
+          <g id="cumHoverG" opacity="0" pointer-events="none">
+            <line id="cumVLine" x1="0" y1="${mt}" x2="0" y2="${mt+cH}" stroke="rgba(255,255,255,0.25)" stroke-width="1" stroke-dasharray="5,3"/>
+            <circle id="cumKlDot" r="6" fill="#EF4444" stroke="white" stroke-width="2"/>
+            <circle id="cumMlpDot" r="6" fill="#34D399" stroke="white" stroke-width="2"/>
+          </g>
+
+          <!-- Transparent overlay for mouse events -->
+          <rect id="cumOverlay" x="${ml}" y="${mt}" width="${cW}" height="${cH}" fill="transparent" style="cursor:crosshair"/>
+        </svg>
+
+        <!-- Hover tooltip -->
+        <div class="cum-tooltip" id="cumTooltip" style="display:none;pointer-events:none">
+          <div class="ct-year" id="cumTYear"></div>
+          <div class="ct-row"><span class="ct-dot" style="background:#EF4444"></span><span>Kaukolämpö kumulat.</span><span class="ct-val kl" id="cumTKL"></span></div>
+          <div class="ct-row"><span class="ct-dot" style="background:#34D399"></span><span>Maalämpö kumulat.</span><span class="ct-val mlp" id="cumTMLP"></span></div>
+          <div class="ct-row ct-savings-row"><span class="ct-dot" style="background:#FBBF24"></span><span>Säästö tähän mennessä</span><span class="ct-val savings" id="cumTDiff"></span></div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function initCumulativeChart(r, d50) {
+  const W = 1000, H = 440;
+  const ml = 95, mr = 50, mt = 50, mb = 65;
+  const cW = W - ml - mr, cH = H - mt - mb;
+  const maxVal = Math.max(...d50.rows.map(row => row.klRunning));
+
+  const xS = y => ((y - 1) / 49) * cW + ml;
+  const yS = v => cH - (v / maxVal) * cH + mt;
+
+  const svg      = document.getElementById('cumChartSVG');
+  const overlay  = document.getElementById('cumOverlay');
+  const hoverG   = document.getElementById('cumHoverG');
+  const vline    = document.getElementById('cumVLine');
+  const klDot    = document.getElementById('cumKlDot');
+  const mlpDot   = document.getElementById('cumMlpDot');
+  const tooltip  = document.getElementById('cumTooltip');
+  const wrap     = document.getElementById('cumChartWrap');
+  if (!overlay || !svg) return;
+
+  overlay.addEventListener('mousemove', function(e) {
+    const svgRect = svg.getBoundingClientRect();
+    const scaleX  = W / svgRect.width;
+    const mx      = (e.clientX - svgRect.left) * scaleX;
+    const chartX  = mx - ml;
+    const yearIdx = Math.max(0, Math.min(49, Math.round(chartX / cW * 49)));
+    const row     = d50.rows[yearIdx];
+    if (!row) return;
+
+    const x   = xS(row.year);
+    const yKL = yS(row.klRunning);
+    const yMP = yS(row.mlpRunning);
+
+    hoverG.setAttribute('opacity', '1');
+    vline.setAttribute('x1', x); vline.setAttribute('x2', x);
+    klDot.setAttribute('cx', x);  klDot.setAttribute('cy', yKL);
+    mlpDot.setAttribute('cx', x); mlpDot.setAttribute('cy', yMP);
+
+    // Populate tooltip
+    document.getElementById('cumTYear').textContent = `Vuosi ${row.year}`;
+    document.getElementById('cumTKL').textContent   = row.klRunning.toLocaleString('fi-FI') + ' €';
+    document.getElementById('cumTMLP').textContent  = row.mlpRunning.toLocaleString('fi-FI') + ' €';
+    document.getElementById('cumTDiff').textContent = '+' + row.diff.toLocaleString('fi-FI') + ' €';
+
+    // Position tooltip relative to wrap div
+    const wrapRect = wrap.getBoundingClientRect();
+    const tx = e.clientX - wrapRect.left;
+    const ty = e.clientY - wrapRect.top;
+    tooltip.style.display = 'block';
+    tooltip.style.left = (tx + (tx > wrapRect.width * 0.6 ? -210 : 20)) + 'px';
+    tooltip.style.top  = Math.max(0, ty - 80) + 'px';
+  });
+
+  overlay.addEventListener('mouseleave', function() {
+    hoverG.setAttribute('opacity', '0');
+    tooltip.style.display = 'none';
+  });
+}
+
+
+function renderCopExplainer(r) {
+  return `
+    <div class="cop-explainer-card">
+      <div class="cec-header">
+        <div class="cec-icon">⚡</div>
+        <div>
+          <div class="cec-title">Miksi COP paranee ajan myötä?</div>
+          <div class="cec-sub">Historiallinen kehitys ja miksi malli ${fmt(r.COP,1)} → ${fmt(r.upgradedCOP,1)} on perusteltu</div>
+        </div>
+      </div>
+      <div class="cec-timeline">
+        <div class="cect-item">
+          <div class="cect-year">2000-luku</div>
+          <div class="cect-cop">COP ~2,5–3,0</div>
+          <div class="cect-desc">Kiinteänopeuksiset kompressorit · R22/R407C-kylmäaineet · Yksinkertainen säätö</div>
+        </div>
+        <div class="cect-arrow">→</div>
+        <div class="cect-item">
+          <div class="cect-year">2010-luku</div>
+          <div class="cect-cop">COP ~3,0–3,8</div>
+          <div class="cect-desc">Muuttuvanopeuksiset (inverteri) kompressorit yleistyvät · R410A · Osittaiskuormalla 20% vähemmän energiaa</div>
+        </div>
+        <div class="cect-arrow">→</div>
+        <div class="cect-item">
+          <div class="cect-year">2020-luku</div>
+          <div class="cect-cop">COP ~3,5–4,5+</div>
+          <div class="cect-desc">R32-kylmäaine (parempi lämmönsiirto) · Älyohjaus ja kysyntäjousto · Optimoitu lämmönvaihdin</div>
+        </div>
+        <div class="cect-arrow">→</div>
+        <div class="cect-item cect-future">
+          <div class="cect-year">~v. ${SVC.copImprovementYear} (uusi pumppu)</div>
+          <div class="cect-cop" style="color:var(--green)">COP ${fmt(r.upgradedCOP,1)}</div>
+          <div class="cect-desc">Malli: +${SVC.copImprovement} COP konservatiivisesti (kaksi vuosikymmentä kehitystä). Laskee sähkökuluja noin ${((1 - r.COP/r.upgradedCOP)*100).toFixed(0)} %.</div>
+        </div>
+      </div>
+      <div class="cec-note">
+        💡 <strong>Konservatiivinen arvio:</strong> Käytämme +${SVC.copImprovement} COP-parannusta, vaikka historiatiedot viittaavat jopa 0,15–0,20 COP:n parannukseen vuosikymmenessä. Todellinen hyöty voi olla suurempi, mutta haluamme pysyä varovaisella puolella.
+      </div>
+    </div>
+  `;
 }
 
 // ── COP Simulator ─────────────────────────────────────────────────────
@@ -690,44 +1329,47 @@ function initCopSimulator(r) {
     data.cop = String(newCOP);
     const r2 = calculate(newCOP);
     renderReport(r2);
+    renderTab2(r2);
     updateCopUI(r2);
     saveSession();
   });
 }
 
+// ── Tab system ─────────────────────────────────────────────────────────
+window.switchTab = function(n) {
+  const reportLayout = reportSection.querySelector('.report-layout');
+  const tab2Panel = document.getElementById('tab2Panel');
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.getElementById(`tabBtn${n}`).classList.add('active');
+  if (n === 1) {
+    if (reportLayout) reportLayout.style.display = '';
+    if (tab2Panel) tab2Panel.classList.add('hidden');
+  } else {
+    if (reportLayout) reportLayout.style.display = 'none';
+    if (tab2Panel) tab2Panel.classList.remove('hidden');
+  }
+};
+
 // ── Stage progression ──────────────────────────────────────────────────
 async function advanceStage() {
   if (currentStage >= stages.length) return;
   const stage = stages[currentStage];
-
   collectInputs(stage);
-
-  // Build user message
   addMessage('user', buildUserSummary(stage));
-
-  // Update sidebar
   const labels = stage.sidebarLabels || {};
   Object.keys(labels).forEach(key => {
     if (data[key]) addSidebarItem(labels[key], data[key]);
   });
-
-  // Determine next
   const hasSolar = data.hasSolar;
   let nextIdx = currentStage + 1;
-
-  // Skip solar stage if user said no
   if (stage.radioKey === 'hasSolar' && hasSolar === 'no') {
-    nextIdx = currentStage + 2; // skip stage 2.5
+    nextIdx = currentStage + 2;
   }
-
   inputWrapper.innerHTML = '';
   btnSend.disabled = true;
-
   showTyping();
-
   await new Promise(r => setTimeout(r, 900));
   removeTyping();
-
   if (nextIdx < stages.length) {
     const next = stages[nextIdx];
     currentStage = nextIdx;
@@ -751,28 +1393,17 @@ const SAVES_KEY = 'mlp_solar_saves';
 function saveSession(nameOverride = null) {
   try {
     let saves = JSON.parse(localStorage.getItem(SAVES_KEY) || '{}');
-    // Also check for legacy mlp_solar_v1 and migrate it if found
     const legacy = localStorage.getItem('mlp_solar_v1');
     if (legacy && Object.keys(saves).length === 0) {
-       saves['legacy'] = JSON.parse(legacy);
-       saves['legacy'].id = 'legacy';
-       saves['legacy'].name = 'Vanha tallennus';
-       localStorage.removeItem('mlp_solar_v1');
+      saves['legacy'] = JSON.parse(legacy);
+      saves['legacy'].id = 'legacy';
+      saves['legacy'].name = 'Vanha tallennus';
+      localStorage.removeItem('mlp_solar_v1');
     }
-
-    if (!currentSaveId) {
-       currentSaveId = Date.now().toString();
-    }
-    
+    if (!currentSaveId) currentSaveId = Date.now().toString();
     const existingName = saves[currentSaveId]?.name;
     const saveName = nameOverride || existingName || `Analyysi ${new Date().toLocaleDateString('fi-FI')}`;
-
-    saves[currentSaveId] = {
-      id: currentSaveId,
-      name: saveName,
-      data: { ...data },
-      savedAt: new Date().toISOString()
-    };
+    saves[currentSaveId] = { id: currentSaveId, name: saveName, data: { ...data }, savedAt: new Date().toISOString() };
     localStorage.setItem(SAVES_KEY, JSON.stringify(saves));
   } catch(e) {}
 }
@@ -788,14 +1419,11 @@ function checkSavedSession() {
   const container = document.getElementById('savedSessionsContainer');
   if (!container) return;
   container.innerHTML = '';
-  
   const sessions = getSessions();
   if (sessions.length === 0) return;
-
   sessions.forEach(session => {
     const d = session.data;
     if (!d.kwhYear) return;
-    
     const savedDate = new Date(session.savedAt).toLocaleDateString('fi-FI');
     const banner = document.createElement('div');
     banner.className = 'saved-banner';
@@ -809,7 +1437,6 @@ function checkSavedSession() {
         <button class="sb-resume" data-id="${session.id}">Jatka analyysia →</button>
         <button class="sb-clear" data-id="${session.id}">✕</button>
       </div>`;
-      
     banner.querySelector('.sb-resume').addEventListener('click', () => {
       currentSaveId = session.id;
       Object.keys(data).forEach(k => delete data[k]);
@@ -817,7 +1444,6 @@ function checkSavedSession() {
       heroSection.classList.add('hidden');
       showReport(calculate());
     });
-    
     banner.querySelector('.sb-clear').addEventListener('click', () => {
       try {
         let saves = JSON.parse(localStorage.getItem(SAVES_KEY) || '{}');
@@ -826,7 +1452,6 @@ function checkSavedSession() {
         banner.remove();
       } catch(e) {}
     });
-    
     container.appendChild(banner);
   });
 }
@@ -843,6 +1468,7 @@ const EDIT_FIELDS = [
   { g:'⚡ Sähkö & Aurinko', key:'elecPrice',      label:'Sähkön hinta',    unit:'€/MWh', step:'1' },
   { g:'⚡ Sähkö & Aurinko', key:'heatEscalation', label:'Hintojen korotus',unit:'%/v',   step:'0.25', min:'0', max:'5' },
   { g:'⚡ Sähkö & Aurinko', key:'solarKwp',       label:'Aurinko',         unit:'kWp',   step:'1', solarOnly:true },
+  { g:'⚡ Sähkö & Aurinko', key:'buildingCount',  label:'Rakennuksia',     unit:'kpl',   step:'1', min:'1', solarOnly:true },
   { g:'💰 Investointi',     key:'loanAmount',     label:'Lainasumma',      unit:'€',     step:'1000' },
   { g:'💰 Investointi',     key:'loanInterest',   label:'Korkokanta',      unit:'%',     step:'0.1' },
   { g:'💰 Investointi',     key:'loanYears',      label:'Laina-aika',      unit:'v',     step:'1' },
@@ -865,12 +1491,10 @@ function renderEditPanel() {
     <div class="ep-group">
       <div class="ep-group-label">${grpLabel}</div>
       <div class="ep-fields">${fields.map(f => {
-        // Dynamic unit labels based on vastikeMode
         let unitLabel = f.unit;
         let fieldLabel = f.label;
         if (f.key === 'hoitovastike') {
           unitLabel = vastikeMode === 'osake' ? 'snt/osake/kk' : '€/m²/kk';
-          fieldLabel = 'Hoitovastike';
         } else if (f.key === 'totalBase') {
           unitLabel = vastikeMode === 'osake' ? 'osaketta' : 'm²';
           fieldLabel = vastikeMode === 'osake' ? 'Osakkeiden määrä' : 'Pinta-ala';
@@ -886,6 +1510,7 @@ function renderEditPanel() {
       }).join('')}
       </div>
     </div>`).join('');
+
   const panel = document.createElement('div');
   panel.id = 'editPanel'; panel.className = 'edit-panel'; panel.dataset.collapsed = collapsed?'1':'0';
   panel.innerHTML = `
@@ -928,8 +1553,10 @@ function renderEditPanel() {
       </div>
       <div class="ep-footer"><div class="ep-status" id="epStatus">💾 Tallennetaan automaattisesti</div></div>
     </div>`;
+
   const sidebar = document.getElementById('reportSidebar');
-  sidebar.insertBefore(panel, sidebar.firstChild); // Put edit panel at top of sidebar
+  sidebar.insertBefore(panel, sidebar.firstChild);
+
   document.getElementById('epToggle').addEventListener('click', () => {
     const body = document.getElementById('epBody');
     const hidden = body.style.display === 'none';
@@ -963,6 +1590,7 @@ function debouncedRecalc() {
   editDebounce = setTimeout(() => {
     const r = calculate();
     renderReport(r);
+    renderTab2(r);
     updateCopUI(r);
     saveSession();
     if (st) { st.textContent = '✅ Tallennettu'; st.style.color = 'var(--green)';
@@ -973,9 +1601,42 @@ function debouncedRecalc() {
 // ── Show Report ────────────────────────────────────────────────────────
 function showReport(result) {
   reportSection.classList.remove('hidden');
+
+  // Inject tab bar if not already present
+  if (!document.getElementById('reportTabBar')) {
+    const tabBar = document.createElement('div');
+    tabBar.id = 'reportTabBar';
+    tabBar.className = 'report-tab-bar';
+    tabBar.innerHTML = `
+      <button class="tab-btn active" id="tabBtn1" onclick="switchTab(1)">
+        <span class="tab-icon">📊</span>
+        <span>Hoitovastike &amp; Kassavirta</span>
+      </button>
+      <button class="tab-btn" id="tabBtn2" onclick="switchTab(2)">
+        <span class="tab-icon">🔍</span>
+        <span>50 vuoden kokonaiskustannus</span>
+      </button>`;
+    const reportLayout = reportSection.querySelector('.report-layout');
+    reportSection.insertBefore(tabBar, reportLayout);
+  }
+
+  // Inject Tab 2 panel if not present
+  let tab2Panel = document.getElementById('tab2Panel');
+  if (!tab2Panel) {
+    tab2Panel = document.createElement('div');
+    tab2Panel.id = 'tab2Panel';
+    tab2Panel.className = 'tab2-panel hidden';
+    const reportLayout = reportSection.querySelector('.report-layout');
+    reportSection.insertBefore(tab2Panel, reportLayout.nextSibling);
+  }
+
+  // Always start on Tab 1 after recalc
+  switchTab(1);
+
   renderReport(result);
   renderEditPanel();
   initCopSimulator(result);
+  renderTab2(result);
   saveSession();
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -985,7 +1646,7 @@ document.getElementById('btnStart').addEventListener('click', () => {
   heroSection.classList.add('hidden');
   chatSection.classList.remove('hidden');
   currentStage = 0;
-  currentSaveId = null; // Start fresh
+  currentSaveId = null;
   Object.keys(data).forEach(k => delete data[k]);
   const first = stages[0];
   setStep(first.step);
@@ -1005,7 +1666,11 @@ document.getElementById('btnRestart').addEventListener('click', () => {
   dataItems.innerHTML = '';
   reportSection.classList.add('hidden');
   heroSection.classList.remove('hidden');
-  currentSaveId = null;
+  // Remove tab bar so it's re-created fresh next time
+  const tb = document.getElementById('reportTabBar');
+  if (tb) tb.remove();
+  const tp = document.getElementById('tab2Panel');
+  if (tp) tp.remove();
   setStep(stages[0].step);
   checkSavedSession();
   window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1015,7 +1680,6 @@ document.getElementById('btnRestart').addEventListener('click', () => {
 window.toggleCard = function(headerEl) {
   const toggleBtn = headerEl.querySelector('.rc-toggle');
   const bodyEl = headerEl.nextElementSibling;
-  
   if (bodyEl.style.display === 'none') {
     bodyEl.style.display = 'block';
     toggleBtn.classList.remove('collapsed');
@@ -1026,7 +1690,6 @@ window.toggleCard = function(headerEl) {
     toggleBtn.textContent = '▶';
   }
 };
-
 
 // Save As Modal Logic
 const modal = document.getElementById('saveModal');
@@ -1046,10 +1709,10 @@ document.getElementById('btnConfirmSave').addEventListener('click', () => {
     saveSession(name);
     modal.classList.add('hidden');
     const st = document.getElementById('epStatus');
-    if (st) { 
-       st.textContent = `✅ Tallennettu nimellä: ${name}`; 
-       st.style.color = 'var(--green)';
-       setTimeout(() => { st.textContent='💾 Tallennetaan automaattisesti'; st.style.color=''; }, 3000); 
+    if (st) {
+      st.textContent = `✅ Tallennettu nimellä: ${name}`;
+      st.style.color = 'var(--green)';
+      setTimeout(() => { st.textContent='💾 Tallennetaan automaattisesti'; st.style.color=''; }, 3000);
     }
   }
 });
