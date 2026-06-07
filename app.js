@@ -522,6 +522,10 @@ function calculate50Year(r) {
     const mlpElecY  = netElecY * r.elecPrice;
     mlpCumEnergy += mlpElecY;
 
+    // MLP loan (initial investment)
+    const loanY = r.cashflow[y - 1] ? r.cashflow[y - 1].loanPay : 0;
+    mlpCumEquip += loanY; // Count loan as equipment/capital cost
+
     // MLP service
     let mlpSvcY = SVC.mlpAnnual;
     mlpCumService += SVC.mlpAnnual;
@@ -550,7 +554,7 @@ function calculate50Year(r) {
     }
 
     const klTotalY  = klEnergyY + klSvcY;
-    const mlpTotalY = mlpElecY + mlpSvcY + solarSvcY;
+    const mlpTotalY = mlpElecY + mlpSvcY + solarSvcY + loanY;
 
     klRunning  += klTotalY;
     mlpRunning += mlpTotalY;
