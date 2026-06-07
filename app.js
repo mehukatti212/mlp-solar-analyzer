@@ -1437,7 +1437,26 @@ function saveSession(nameOverride = null) {
 
 function getSessions() {
   try {
-    const saves = JSON.parse(localStorage.getItem(SAVES_KEY) || '{}');
+    let savesStr = localStorage.getItem(SAVES_KEY);
+    if (!savesStr) {
+      const demo = {
+        id: 'demo-metsapurontie',
+        name: 'Asoy Metsäpurontie 9 (Esimerkki)',
+        savedAt: new Date().toISOString(),
+        data: {
+          kwhYear: '600', monthlyFee: '200', yearlyTotal: '55000', 
+          hoitovastike: '4.50', totalBase: '1200', vastikeMode: 'm2', 
+          cop: '3.3', elecPrice: '160', heatEscalation: '1.25', 
+          hasSolar: 'yes', solarAddress: 'Helsinki', solarKwp: '30', 
+          buildingCount: '3', pumpUnits: '3', loanAmount: '450000', loanInterest: '3.5', 
+          loanYears: '15', loanType: 'annuiteetti'
+        }
+      };
+      const initial = { 'demo-metsapurontie': demo };
+      localStorage.setItem(SAVES_KEY, JSON.stringify(initial));
+      savesStr = JSON.stringify(initial);
+    }
+    const saves = JSON.parse(savesStr || '{}');
     return Object.values(saves).sort((a,b) => new Date(b.savedAt) - new Date(a.savedAt));
   } catch(e) { return []; }
 }
