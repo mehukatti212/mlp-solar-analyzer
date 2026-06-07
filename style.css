@@ -834,6 +834,28 @@ body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--tex
 }
 .row-positive td { background: rgba(52,211,153,0.03); }
 
+/* Highlight row when investment is fully paid back */
+.payback-row td {
+  background: rgba(52,211,153,0.12) !important;
+  border-top: 1px solid rgba(52,211,153,0.3);
+  border-bottom: 1px solid rgba(52,211,153,0.3);
+  font-weight: 600;
+}
+.payback-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 6px;
+  background: rgba(251,191,36,0.15); /* amber tint */
+  border: 1px solid rgba(251,191,36,0.4);
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 800;
+  color: #FBBF24;
+  vertical-align: middle;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
 /* ── ASSUMPTIONS BOX ─────────────────────────────────────────────── */
 .assumptions-box {
   background: var(--surface2);

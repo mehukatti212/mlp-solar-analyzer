@@ -554,12 +554,23 @@ function calculate50Year(r) {
     }
 
     const klTotalY  = klEnergyY + klSvcY;
-    const mlpTotalY = mlpElecY + mlpSvcY + solarSvcY + loanY;
+    const mlpOpsY   = mlpElecY + mlpSvcY + solarSvcY;
+    const mlpTotalY = mlpOpsY + loanY;
 
     klRunning  += klTotalY;
     mlpRunning += mlpTotalY;
 
-    rows.push({ year: y, klTotal: klTotalY, mlpTotal: mlpTotalY, klRunning, mlpRunning, diff: klRunning - mlpRunning, isCopYear: y === SVC.copImprovementYear + 1 });
+    rows.push({ 
+      year: y, 
+      klTotal: klTotalY, 
+      mlpTotal: mlpTotalY, 
+      mlpOps: mlpOpsY,
+      mlpLoan: loanY,
+      klRunning, 
+      mlpRunning, 
+      diff: klRunning - mlpRunning, 
+      isCopYear: y === SVC.copImprovementYear + 1 
+    });
   }
 
   const klTotal  = klCumEnergy  + klCumService  + klCumEquip;
@@ -875,12 +886,23 @@ function renderTab2(r) {
   const mlpEquipPct   = (d50.mlp.equip   / biggerTotal * 100).toFixed(1);
 
   // 50-year table (collapsible)
+  let paybackFound = false;
   const tableRows50 = d50.rows.map(row => {
     const copBadge = row.isCopYear ? `<span class="cop-up-badge">⚡ COP↑</span>` : '';
-    return `<tr${row.diff >= 0 ? ' class="row-positive"' : ''}>
-      <td>${row.year}${copBadge}</td>
+    let isPayback = false;
+    if (row.diff >= 0 && !paybackFound) {
+      isPayback = true;
+      paybackFound = true;
+    }
+    let cls = '';
+    if (isPayback) cls = ' class="payback-row"';
+    else if (row.diff >= 0) cls = ' class="row-positive"';
+
+    return `<tr${cls}>
+      <td>${row.year}${copBadge}${isPayback ? ' <span class="payback-badge">Takaisinmaksu</span>' : ''}</td>
       <td>${fmtE(row.klTotal)}</td>
-      <td>${fmtE(row.mlpTotal)}</td>
+      <td>${fmtE(row.mlpOps)}</td>
+      <td>${row.mlpLoan > 0 ? fmtE(row.mlpLoan) : '-'}</td>
       <td class="${row.diff >= 0 ? 'positive-cell' : 'negative-cell'}">${row.diff >= 0 ? '+' : ''}${fmtE(row.diff)}</td>
       <td class="${row.klRunning > row.mlpRunning ? 'positive-cell' : 'negative-cell'}">${fmtE(row.diff >= 0 ? row.diff : 0)}</td>
     </tr>`;
@@ -1007,8 +1029,9 @@ function renderTab2(r) {
           <table class="cf-table">
             <thead><tr>
               <th>Vuosi</th>
-              <th>KL (vuosi)</th>
-              <th>MLP (vuosi)</th>
+              <th>KL (energia+huolto)</th>
+              <th>MLP (energia+huolto)</th>
+              <th>Investointi (laina)</th>
               <th>Ero (vuosi)</th>
               <th>Kumulat. säästö</th>
             </tr></thead>
