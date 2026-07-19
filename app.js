@@ -78,7 +78,7 @@ const stages = [
     step: 2.5,
     botMsg: `Loistava valinta! ☀️ Suomen aurinkoisuus vaihtelee sijainnin mukaan. Anna tiedot niin lasken arvioidun vuosituotannon.\n\n<strong>Tärkeää 50-vuoden elinkaarta varten:</strong> Aurinkoinvertteri vaihdetaan noin 12–13 vuoden välein — yksi invertteri per rakennus. Jotta elinkaarikulut voidaan laskea tarkasti, tarvitsen myös tiedon rakennusten lukumäärästä.`,
     inputs: [
-      { key:'solarAddress',  label:'Kiinteistön osoite', placeholder:'esim. Mannerheimintie 1, Helsinki', unit:'' },
+      { key:'solarAddress',  label:'Kiinteistön osoite', placeholder:'esim. Mannerheimintie 1, Helsinki', unit:'', type:'text' },
       { key:'solarKwp',      label:'Aurinkopaneelijärjestelmän koko (kWp)', placeholder:'esim. 30', unit:'kWp' },
       { key:'buildingCount', label:'Rakennusten / inverttereiden lukumäärä taloyhtiössä', placeholder:'esim. 3', unit:'kpl' },
     ],
@@ -242,14 +242,26 @@ function updateVastikeFields(stage) {
   });
 }
 
+function isValidNumericInput(val) {
+  const n = parseFloat(val);
+  return Number.isFinite(n) && n >= 0;
+}
+
 function checkSendEnabled(stage) {
   const regularInputs = stage.inputs || [];
   const extraInputs = (stage.extraInputs || []).filter(i => i.type !== 'radio');
   const allTextInputs = [...regularInputs, ...extraInputs];
-  const filled = allTextInputs.every(inp => {
+  // .map(...).every(Boolean) instead of .every(cb): .every() short-circuits on the first
+  // falsy result, which would skip the classList.toggle side-effect for every field after
+  // the first invalid/empty one. .map() always visits every field.
+  const filled = allTextInputs.map(inp => {
     const el = document.getElementById('inp_' + inp.key);
-    return el && el.value.trim() !== '';
-  });
+    if (!el) return false;
+    const val = el.value.trim();
+    const valid = val !== '' && (inp.type === 'text' || isValidNumericInput(val));
+    el.classList.toggle('input-error', val !== '' && !valid);
+    return valid;
+  }).every(Boolean);
   const hasVastikeRadio = (stage.extraInputs || []).some(i => i.type === 'radio' && i.key === 'vastikeMode');
   const vastikeModeOk = !hasVastikeRadio || (data.vastikeMode === 'm2' || data.vastikeMode === 'osake');
   const radioOk = !stage.radioKey || inputWrapper.querySelector('.radio-btn.selected');
@@ -324,6 +336,42 @@ function calcFlatPrincipalPayment(loanAmount, loanInt, loanYears, yearIndex) {
   return { principal, interest, total: principal + interest };
 }
 
+// ── Shared per-year cost model ─────────────────────────────────────────
+// Single source of truth for the year-by-year energy escalation, COP-adjusted
+// electricity need and service/replacement costs. Used by BOTH calculate()'s
+// cashflow loop and calculate50Year(), so the two can never silently drift
+// apart the way they did historically (missing loan payment, etc).
+function computeYearCosts(y, ctx) {
+  const { yearlyTotal, heatEsc, COP, upgradedCOP, kwhYear, solarMWh, elecPrice, hasSolar, buildingCount, pumpUnits } = ctx;
+
+  // KL energy (escalating)
+  const klEnergy = yearlyTotal * Math.pow(1 + heatEsc, y - 1);
+
+  // MLP electricity — COP improves from the year after pump replacement
+  const effectiveCOP = y > SVC.copImprovementYear ? upgradedCOP : COP;
+  const elecNeeded    = kwhYear / effectiveCOP;
+  const netElec       = Math.max(0, elecNeeded - solarMWh);
+  const mlpElec       = netElec * elecPrice;
+
+  // MLP service costs this year
+  let mlpService = SVC.mlpAnnual;
+  if (y === SVC.pumpReplYear) mlpService += pumpUnits * SVC.pumpUnitCost;
+
+  // Solar service costs this year
+  let solarService = 0;
+  if (hasSolar) {
+    if (SVC.inverterYears.includes(y)) solarService += buildingCount * SVC.inverterCost;
+    if (y === SVC.panelReplYear) solarService += SVC.panelReplCost;
+    if (y % SVC.solarInspInterval === 0) solarService += SVC.solarInspCost;
+  }
+
+  // KL service costs this year
+  let klService = SVC.klAnnual;
+  if (SVC.klHeatExchYears.includes(y)) klService += SVC.klHeatExchCost;
+
+  return { klEnergy, klService, effectiveCOP, elecNeeded, netElec, mlpElec, mlpService, solarService };
+}
+
 // ── Main calculation ───────────────────────────────────────────────────
 function calculate(copOverride) {
   const COP         = copOverride !== undefined ? copOverride : (parseFloat(data.cop) || 3.2);
@@ -356,26 +404,26 @@ function calculate(copOverride) {
   const firstYearPayFlat = loanYears > 0 ? calcFlatPrincipalPayment(loanAmount, loanInt, loanYears, 1).total : 0;
   const grossSavings = yearlyTotal - newElecCost;
   const refLoanPay = loanType === 'tasalyhennys' ? firstYearPayFlat : annualLoan;
-  const netSavings   = yearlyTotal - (newElecCost + refLoanPay);
   const upgradedCOP  = COP + SVC.copImprovement;
+
+  // Year-1 totals sis. vuosihuollon — vastaa alla lasketun cashflow[0]:n klTotal/mlpTotal-arvoja
+  // (vuosi 1 ei koskaan osu pumpun/invertterin/paneelin/LJK:n uusintavuoteen, joten nämä täsmäävät tarkalleen).
+  const klCostY1  = yearlyTotal + SVC.klAnnual;
+  const mlpCostY1 = newElecCost + SVC.mlpAnnual;
+  const netSavings     = klCostY1 - (mlpCostY1 + refLoanPay);
+  const newTotalCostY1 = mlpCostY1 + refLoanPay;
 
   // Pump unit count: 1 per 200 MWh (user-confirmed: 600 MWh → 3 units)
   const pumpUnits = Math.max(1, Math.ceil(kwhYear / SVC.pumpUnitsPerMwh));
 
-  // Hoitovastike impact (year 1, energy+loan only — for summary display)
+  // Hoitovastike impact (year 1, energia+laina+huolto — vastaa cashflow[0]:aa, yhteenvetonäkymään)
   let newHoitoDuringLoan = 0, newHoitoAfterLoan = 0;
   if (baseValue > 0) {
-    if (vastikeMode === 'm2') {
-      const costDeltaDuringLoan = (newElecCost + refLoanPay) - yearlyTotal;
-      const costDeltaAfterLoan  = newElecCost - yearlyTotal;
-      newHoitoDuringLoan = hoito + costDeltaDuringLoan / baseValue / 12;
-      newHoitoAfterLoan  = hoito + costDeltaAfterLoan  / baseValue / 12;
-    } else {
-      const costDeltaDuringLoan = (newElecCost + refLoanPay) - yearlyTotal;
-      const costDeltaAfterLoan  = newElecCost - yearlyTotal;
-      newHoitoDuringLoan = hoito + (costDeltaDuringLoan / baseValue / 12) * 100;
-      newHoitoAfterLoan  = hoito + (costDeltaAfterLoan  / baseValue / 12) * 100;
-    }
+    const costDeltaDuringLoan = (mlpCostY1 + refLoanPay) - klCostY1;
+    const costDeltaAfterLoan  = mlpCostY1 - klCostY1;
+    const vastikeScale = vastikeMode === 'osake' ? 100 : 1;
+    newHoitoDuringLoan = hoito + (costDeltaDuringLoan / baseValue / 12) * vastikeScale;
+    newHoitoAfterLoan  = hoito + (costDeltaAfterLoan  / baseValue / 12) * vastikeScale;
   }
 
   // Year-by-year cashflow — includes ALL service costs and COP improvement
@@ -385,16 +433,13 @@ function calculate(copOverride) {
   let cashflowPositiveYear = null;
   const cashflow = [];
   const years = loanYears > 0 ? loanYears + 1 : 15;
+  const yearCtx = { yearlyTotal, heatEsc, COP, upgradedCOP, kwhYear, solarMWh, elecPrice, hasSolar, buildingCount, pumpUnits };
 
   for (let y = 1; y <= years; y++) {
-    // KL energy (escalating)
-    const oldCostY = yearlyTotal * Math.pow(1 + heatEsc, y - 1);
-
-    // MLP electricity — COP improves from year after pump replacement
-    const effectiveCOP = y > SVC.copImprovementYear ? upgradedCOP : COP;
-    const elecNeededY  = kwhYear / effectiveCOP;
-    const netElecY     = Math.max(0, elecNeededY - solarMWh);
-    const newElecCostY = netElecY * elecPrice;
+    const yc = computeYearCosts(y, yearCtx);
+    const oldCostY      = yc.klEnergy;
+    const effectiveCOP  = yc.effectiveCOP;
+    const newElecCostY  = yc.mlpElec;
 
     // Loan payment
     let interestY = 0, principalY = 0, loanPayY = 0;
@@ -412,39 +457,32 @@ function calculate(copOverride) {
       remaining = Math.max(0, remaining - principalY);
     }
 
-    // ── MLP service costs this year ──────────────────────────────────
-    let mlpServiceCostY = SVC.mlpAnnual;
+    // ── MLP service notes (costs already in yc.mlpService) ────────────
+    const mlpServiceCostY = yc.mlpService;
     const mlpServiceNotes = [];
     if (y === SVC.pumpReplYear) {
-      const pumpCost = pumpUnits * SVC.pumpUnitCost;
-      mlpServiceCostY += pumpCost;
-      mlpServiceNotes.push(`🔧 Pumppu uusittu ${pumpUnits} kpl × ${fmt(SVC.pumpUnitCost)} € = ${fmtE(pumpCost)}`);
+      mlpServiceNotes.push(`🔧 Pumppu uusittu ${pumpUnits} kpl × ${fmt(SVC.pumpUnitCost)} € = ${fmtE(pumpUnits * SVC.pumpUnitCost)}`);
     }
 
-    // ── Solar service costs this year ─────────────────────────────────
-    let solarServiceCostY = 0;
+    // ── Solar service notes (costs already in yc.solarService) ───────
+    const solarServiceCostY = yc.solarService;
     const solarServiceNotes = [];
     if (hasSolar) {
       if (SVC.inverterYears.includes(y)) {
-        const invCost = buildingCount * SVC.inverterCost;
-        solarServiceCostY += invCost;
-        solarServiceNotes.push(`⚡ Invertteri ${buildingCount} kpl × ${fmt(SVC.inverterCost)} € = ${fmtE(invCost)}`);
+        solarServiceNotes.push(`⚡ Invertteri ${buildingCount} kpl × ${fmt(SVC.inverterCost)} € = ${fmtE(buildingCount * SVC.inverterCost)}`);
       }
       if (y === SVC.panelReplYear) {
-        solarServiceCostY += SVC.panelReplCost;
         solarServiceNotes.push(`☀️ Paneelit uusittu ${fmtE(SVC.panelReplCost)}`);
       }
       if (y % SVC.solarInspInterval === 0) {
-        solarServiceCostY += SVC.solarInspCost;
         solarServiceNotes.push(`🔍 Tarkastus ${fmtE(SVC.solarInspCost)}`);
       }
     }
 
-    // ── KL service costs this year ────────────────────────────────────
-    let klServiceCostY = SVC.klAnnual;
+    // ── KL service notes (costs already in yc.klService) ─────────────
+    const klServiceCostY = yc.klService;
     const klServiceNotes = [];
     if (SVC.klHeatExchYears.includes(y)) {
-      klServiceCostY += SVC.klHeatExchCost;
       klServiceNotes.push(`🔧 LJK uusittu ${fmtE(SVC.klHeatExchCost)}`);
     }
 
@@ -487,6 +525,7 @@ function calculate(copOverride) {
     kwhYear, COP, upgradedCOP, elecNeeded, solarMWh, netElec, newElecCost,
     oldCost: yearlyTotal, monthlyFee, annualLoan, loanType, firstYearPayFlat, refLoanPay,
     newTotalCost: newElecCost + refLoanPay,
+    klCostY1, newTotalCostY1,
     grossSavings, netSavings, hoito, totalM2: baseValue, vastikeMode, heatEsc,
     newHoitoDuringLoan, newHoitoAfterLoan,
     loanAmount, loanInt, loanYears, solarKwp, hasSolar, buildingCount, pumpUnits,
@@ -501,39 +540,32 @@ function calculate50Year(r) {
   let mlpCumEnergy = 0, mlpCumService = 0, mlpCumEquip = 0;
   const rows = [];
   let klRunning = 0, mlpRunning = 0;
+  const yearCtx = {
+    yearlyTotal: r.oldCost, heatEsc: r.heatEsc, COP: r.COP, upgradedCOP: r.upgradedCOP,
+    kwhYear: r.kwhYear, solarMWh: r.solarMWh, elecPrice: r.elecPrice,
+    hasSolar: r.hasSolar, buildingCount: r.buildingCount, pumpUnits: r.pumpUnits,
+  };
 
   for (let y = 1; y <= YEARS; y++) {
+    const yc = computeYearCosts(y, yearCtx);
+
     // KL energy (escalating)
-    const klEnergyY = r.oldCost * Math.pow(1 + r.heatEsc, y - 1);
-    klCumEnergy += klEnergyY;
+    klCumEnergy += yc.klEnergy;
 
     // KL service
-    let klSvcY = SVC.klAnnual;
     klCumService += SVC.klAnnual;
-    if (SVC.klHeatExchYears.includes(y)) {
-      klSvcY += SVC.klHeatExchCost;
-      klCumEquip += SVC.klHeatExchCost;
-    }
+    if (SVC.klHeatExchYears.includes(y)) klCumEquip += SVC.klHeatExchCost;
 
     // MLP electricity — COP improves after pump replacement
-    const effCOP    = y > SVC.copImprovementYear ? r.upgradedCOP : r.COP;
-    const elecNeedY = r.kwhYear / effCOP;
-    const netElecY  = Math.max(0, elecNeedY - r.solarMWh);
-    const mlpElecY  = netElecY * r.elecPrice;
-    mlpCumEnergy += mlpElecY;
+    mlpCumEnergy += yc.mlpElec;
 
     // MLP loan (initial investment)
     const loanY = r.cashflow[y - 1] ? r.cashflow[y - 1].loanPay : 0;
     mlpCumEquip += loanY; // Count loan as equipment/capital cost
 
     // MLP service
-    let mlpSvcY = SVC.mlpAnnual;
     mlpCumService += SVC.mlpAnnual;
-    if (y === SVC.pumpReplYear) {
-      const c = r.pumpUnits * SVC.pumpUnitCost;
-      mlpSvcY += c;
-      mlpCumEquip += c;
-    }
+    if (y === SVC.pumpReplYear) mlpCumEquip += r.pumpUnits * SVC.pumpUnitCost;
 
     // Solar service
     let solarSvcY = 0;
@@ -553,8 +585,8 @@ function calculate50Year(r) {
       }
     }
 
-    const klTotalY  = klEnergyY + klSvcY;
-    const mlpOpsY   = mlpElecY + mlpSvcY + solarSvcY;
+    const klTotalY  = yc.klEnergy + yc.klService;
+    const mlpOpsY   = yc.mlpElec + yc.mlpService + solarSvcY;
     const mlpTotalY = mlpOpsY + loanY;
 
     klRunning  += klTotalY;
@@ -610,8 +642,10 @@ function renderReport(r) {
                          ...row.solarServiceNotes.map(n => `<span class="ev-badge ev-solar">${n.split(' ').slice(0,2).join(' ')}</span>`),
                          ...row.klServiceNotes.map(n => `<span class="ev-badge ev-kl">${n.split(' ').slice(0,2).join(' ')}</span>`)].join('');
 
+    // Displayed value is negated (negative = vastike alenee, ks. tooltip), joten väritys
+    // perustuu ei-negatoituun row.vastike-arvoon: positiivinen row.vastike = vastike laskee = vihreä.
     const vastikeStr = row.vastike !== null
-      ? `<td class="${row.vastike <= 0 ? 'positive-cell' : 'negative-cell'} vastike-cell">${(-row.vastike).toLocaleString('fi-FI', {minimumFractionDigits:2, maximumFractionDigits:2, signDisplay:'always'})}</td>`
+      ? `<td class="${row.vastike >= 0 ? 'positive-cell' : 'negative-cell'} vastike-cell">${(-row.vastike).toLocaleString('fi-FI', {minimumFractionDigits:2, maximumFractionDigits:2, signDisplay:'always'})}</td>`
       : '';
 
     // COP upgrade annotation row
@@ -643,7 +677,7 @@ function renderReport(r) {
         <div class="rc-header-left">
           <div class="rc-icon blue">⚡</div>
           <div><div class="rc-title">1. Ennen ja jälkeen — Energiankulutus</div>
-          <div class="rc-subtitle">COP-kerroin ${fmt(r.COP,1)} × — ${fmt(r.kwhYear/r.elecNeeded,1)} kertaa tehokkaampi kuin suorasähkölämmitys</div></div>
+          <div class="rc-subtitle">COP-kerroin ${fmt(r.COP,1)} × — ${r.elecNeeded > 0 ? fmt(r.kwhYear/r.elecNeeded,1) : '—'} kertaa tehokkaampi kuin suorasähkölämmitys</div></div>
         </div>
         <div class="rc-toggle">▼</div>
       </div>
@@ -671,7 +705,7 @@ function renderReport(r) {
         </div>
         <div class="bar-row">
           <div class="bar-row-label">Maalämpösähkö</div>
-          <div class="bar-track"><div class="bar-fill new" style="width:${(r.elecNeeded/r.kwhYear*100).toFixed(1)}%"></div></div>
+          <div class="bar-track"><div class="bar-fill new" style="width:${r.kwhYear > 0 ? (r.elecNeeded/r.kwhYear*100).toFixed(1) : 0}%"></div></div>
           <div class="bar-row-val">${fmt(r.elecNeeded,1)} MWh</div>
         </div>
       </div>
@@ -692,7 +726,7 @@ function renderReport(r) {
       <div class="savings-grid">
         <div class="savings-cell">
           <div class="sc-label">Vanha lämmityskustannus (v. 1) <div class="info-icon" data-tip="Nykyinen kaukolämpölasku + vuosihuolto 500€ (ensimmäinen vuosi).">?</div></div>
-          <div class="sc-value negative">${fmtE(r.oldCost)}</div>
+          <div class="sc-value negative">${fmtE(r.klCostY1)}</div>
           <div class="sc-note">Kaukolämpö energia · +${(r.heatEsc*100).toFixed(2)}%/v korotus</div>
         </div>
         <div class="savings-cell">
@@ -714,7 +748,7 @@ function renderReport(r) {
       <div class="savings-highlight">
         <div>
           <div class="sh-label">${r.netSavings >= 0 ? '✅ Nettosäästö lainanlyhennysten jälkeen (v. 1)' : '⚠️ Lisäkustannus lainanlyhennysten jälkeen (v. 1)'} <div class="info-icon" data-tip="Paljonko taloyhtiönne säästää tai menettää rahaa ensimmäisenä vuonna KAIKKIEN kulujen (sähkö + lyhennys) jälkeen.">?</div></div>
-          <div style="font-size:13px;color:var(--text3);margin-top:4px">Kustannus ${r.netSavings >= 0 ? 'laskee' : 'nousee'} ${fmtE(r.oldCost)} → ${fmtE(r.newTotalCost)}</div>
+          <div style="font-size:13px;color:var(--text3);margin-top:4px">Kustannus ${r.netSavings >= 0 ? 'laskee' : 'nousee'} ${fmtE(r.klCostY1)} → ${fmtE(r.newTotalCostY1)}</div>
         </div>
         <div class="sh-value" style="color:${r.netSavings >= 0 ? 'var(--green)' : 'var(--red)'}">
           ${r.netSavings >= 0 ? '+' : ''}${fmtE(r.netSavings)} / v
@@ -797,7 +831,7 @@ function renderReport(r) {
           <div style="padding:16px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;">
             <strong>Teidän kohteeseenne suunniteltu järjestelmä:</strong><br>
             Paneelien nimellisteho: <strong style="color:var(--text)">${r.solarKwp} kWp</strong><br>
-            Arvioitu hyödynnettävä vuosituotto: <strong style="color:var(--text)">${fmt(r.solarKwp * 0.72, 1)} MWh</strong><br>
+            Arvioitu hyödynnettävä vuosituotto: <strong style="color:var(--text)">${fmt(r.solarMWh, 1)} MWh</strong><br>
             Rakennuksia / inverttereitä: <strong style="color:var(--text)">${r.buildingCount} kpl</strong>
           </div>
         </div>

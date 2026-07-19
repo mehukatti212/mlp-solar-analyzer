@@ -19,8 +19,8 @@ RUN echo '#!/bin/sh' > /start.sh && \
     echo '  echo "Setting up basic auth..."' >> /start.sh && \
     echo '  htpasswd -bc /etc/nginx/.htpasswd "$AUTH_USERNAME" "$AUTH_PASSWORD"' >> /start.sh && \
     echo 'else' >> /start.sh && \
-    echo '  echo "Warning: AUTH_USERNAME and AUTH_PASSWORD not set. Creating default fallback."' >> /start.sh && \
-    echo '  htpasswd -bc /etc/nginx/.htpasswd admin password123' >> /start.sh && \
+    echo '  echo "ERROR: AUTH_USERNAME and AUTH_PASSWORD must both be set. Refusing to start without credentials." >&2' >> /start.sh && \
+    echo '  exit 1' >> /start.sh && \
     echo 'fi' >> /start.sh && \
     echo 'exec nginx -g "daemon off;"' >> /start.sh && \
     chmod +x /start.sh
